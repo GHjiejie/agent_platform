@@ -109,7 +109,7 @@ export function MembersPage({ user, changed }: { user: User; changed: () => Prom
           </table>
         </div> : <Empty title="没有匹配成员" />}</ResourceState>
     </Panel>
-    <Panel title="组织邀请" detail="创建邀请后复制链接并自行分享；新邮箱需由平台运营人员先开通账号，平台不会自动发送邮件。">
+    <Panel title="组织邀请" detail="创建邀请后复制链接并自行分享；对方可使用受邀邮箱登录或自动注册，平台不会自动发送邮件。">
       <ResourceState loading={invitations.loading} error={invitations.error} retry={() => void invitations.reload()}>
         {invitations.data?.items.length ? <div className="table-scroll">
           <table>
@@ -134,7 +134,7 @@ export function MembersPage({ user, changed }: { user: User; changed: () => Prom
                   {item.expires_at ? dateTime(item.expires_at) : "—"}</td>
               </tr>)}</tbody>
           </table>
-        </div> : <Empty title="暂无邀请" description="邀请成员使用现有账号加入组织。" />}</ResourceState>
+        </div> : <Empty title="暂无邀请" description="邀请成员使用指定邮箱登录并加入组织。" />}</ResourceState>
     </Panel>
     {invite && <Modal title={createdLink ? "邀请已创建" : "邀请组织成员"} close={() => setInvite(false)}>
       {createdLink ? <div className="form-body">
@@ -144,7 +144,7 @@ export function MembersPage({ user, changed }: { user: User; changed: () => Prom
         <Button onClick={async () => { try { await navigator.clipboard.writeText(createdLink); toast("邀请链接已复制"); } catch { toast("请选中邀请链接后手动复制。", "error"); } }}>
           <Copy size={16} />复制链接</Button>
       </div> : <Form close={() => setInvite(false)} label="创建邀请" submit={async (form) => { const result = await write<Invitation>("/invitations", { email: formValue(form, "email"), role: formValue(form, "role") }); const value = result.accept_url ?? (result.token ? `${location.origin}${location.pathname}#invite?token=${encodeURIComponent(result.token)}` : ""); if (value) setCreatedLink(value); else { setInvite(false); toast("邀请已创建，请从组织邀请记录中查看状态"); } await invitations.reload(); }}>
-        <Field label="成员邮箱" hint="请确认对方已有登录账号；新账号请联系平台运营人员开通后再接受邀请。">
+        <Field label="成员邮箱" hint="填写对方用于登录的邮箱；新用户首次登录时会自动注册，再接受邀请加入组织。">
           <input name="email" type="email" required autoComplete="off" />
         </Field>
         <Field label="加入后的角色">

@@ -537,7 +537,7 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
         )
 
         return {
-            "timeout_seconds": settings.run_timeout,
+            "timeout_seconds": settings.run_timeout or None,
             "max_cost": settings.max_run_cost,
             "max_steps": MAX_MODEL_CALLS,
             "max_output_tokens": MAX_OUTPUT_TOKENS,
@@ -612,7 +612,12 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
         idempotency_key: str | None = Header(default=None),
     ):
         return platform.enqueue(
-            user, session_id, body.message, idempotency(idempotency_key), body.model_id
+            user,
+            session_id,
+            body.message,
+            idempotency(idempotency_key),
+            body.model_id,
+            reasoning_effort=body.reasoning_effort,
         )
 
     @app.get(

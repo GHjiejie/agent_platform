@@ -44,7 +44,7 @@ make -C agent_platform stop
 
 本地默认使用 `agent_platform/.data/platform.db` 和 API 内嵌 Worker；未配置 Redis 时采用数据库中的共享准入记录。这个方式便于运行和测试，不代表生产容量已经验证。初始钱包余额是零，管理员需要在费用中心显式入账。
 
-每个 Run 默认最高预占/消费合计 1 USD，可通过 `PLATFORM_MAX_RUN_COST` 设置有限正数。`PLATFORM_RUN_TIMEOUT` 同时限制排队和执行时长（默认300秒）；`PLATFORM_MODEL_TIMEOUT` 限制单次网关调用（默认90秒）。
+每个 Run 默认最高预占/消费合计 1 USD，可通过 `PLATFORM_MAX_RUN_COST` 设置有限正数。`PLATFORM_RUN_TIMEOUT` 默认 `0`，不限制执行总时长；设置正数时仅限制执行阶段。排队期限由 `PLATFORM_QUEUE_TIMEOUT` 独立控制，默认 300 秒。`PLATFORM_MODEL_TIMEOUT` 控制网关请求的连接与流式读取等待，默认 90 秒，并非整个 Agent 的总执行时间。
 
 已有 LiteLLM Proxy、使用 `GATEWAY=external` 启动时，设置：
 

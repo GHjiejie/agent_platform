@@ -298,6 +298,62 @@ class ExecutionLifecycleTests(unittest.IsolatedAsyncioTestCase):
             Decimal(self.platform.billing.wallet(self.user["tenant_id"])["reserved"]), 0
         )
 
+    async def test_unlimited_execution_renews_and_completes_after_old_time_limit(self):
+        self.platform.settings = replace(self.settings, run_timeout=0)
+        queued = self.enqueue()
+        worker = Worker(self.platform, gateway=OfflineInference())
+        claimed = worker.claim()
+        self.assertIsNone(claimed["deadline"])
+        self.assertIsNone(claimed["spec"]["execution_limits"]["timeout_seconds"])
+        # Advance past the former 210-second deadline without waiting in real time.
+        future = time.time() + 600
+        self.change_run(queued["id"], lease_until=future + 1)
+        with patch("agent_platform.apps.worker.main.time.time", return_value=future):
+            worker.renew(claimed)
+            worker.recover()
+            self.assertFalse(worker.is_cancelled(claimed))
+            self.assertEqual(self.stored(queued["id"])["status"], "running")
+            self.assertEqual(self.stored(queued["id"])["lease_until"], future + 20)
+        await asyncio.wait_for(worker.execute(claimed), 3)
+        self.assertEqual(self.stored(queued["id"])["status"], "succeeded")
+
+    async def test_unlimited_execution_still_cancels_and_detects_lost_workers(self):
+        self.platform.settings = replace(self.settings, run_timeout=0)
+        queued = self.enqueue()
+        gateway = OfflineInference(hang=True)
+        worker = Worker(self.platform, gateway=gateway)
+        claimed = worker.claim()
+        task = asyncio.create_task(worker.execute(claimed))
+        try:
+            await asyncio.wait_for(gateway.started.wait(), 3)
+            await asyncio.to_thread(self.platform.cancel_run, self.user, queued["id"])
+            await asyncio.wait_for(task, 3)
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        self.assertTrue(gateway.closed.is_set())
+        self.assertEqual(self.stored(queued["id"])["status"], "cancelled")
+        lost = self.enqueue()
+        worker.claim()
+        self.change_run(lost["id"], lease_until=time.time() - 1)
+        worker.recover()
+        self.assertEqual(self.stored(lost["id"])["status"], "failed")
+        self.assertIsNone(worker.claim())
+
+    async def test_unlimited_platform_keeps_an_explicit_agent_deadline(self):
+        self.platform.settings = replace(self.settings, run_timeout=0)
+        self.platform.save_agent(
+            self.user,
+            {"execution_policy": {"timeout_seconds": 2}},
+            self.agents[0]["id"],
+        )
+        self.platform.publish(self.user, self.agents[0]["id"])
+        self.enqueue()
+        started = time.time()
+        claimed = Worker(self.platform, gateway=OfflineInference()).claim()
+        self.assertAlmostEqual(claimed["deadline"] - started, 2, delta=0.2)
+
     async def test_cancel_after_usage_preserves_settlement(self):
         queued = self.enqueue()
 
@@ -463,6 +519,17 @@ class ExecutionLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ExecutionDeadlineMigrationTests(unittest.TestCase):
+    def test_new_database_migrates_with_unlimited_execution(self):
+        with tempfile.TemporaryDirectory(
+            prefix="unlimited-execution-migration-"
+        ) as directory:
+            url = f"sqlite:///{Path(directory) / 'platform.db'}"
+            config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+            with patch.dict(
+                os.environ, {"PLATFORM_DATABASE_URL": url, "PLATFORM_RUN_TIMEOUT": "0"}
+            ):
+                command.upgrade(config, "head")
+
     def test_populated_upgrade_preserves_queue_and_execution_deadlines(self):
         with tempfile.TemporaryDirectory(prefix="execution-migration-") as directory:
             url = f"sqlite:///{Path(directory) / 'platform.db'}"

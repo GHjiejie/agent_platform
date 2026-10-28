@@ -1,13 +1,13 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
-  AlertCircle, ArrowDown, ArrowUp, Bot, Check, ChevronRight, CircleStop,
+  AlertCircle, ArrowDown, ArrowUp, Bot, Brain, Check, ChevronRight, CircleStop,
   Copy, History, LoaderCircle, MessageSquare, Plus,
   Sparkles, Terminal, Wrench,
 } from "lucide-react";
 import { api, dateTime, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
 import { Button, Modal, SearchBox, Select, useResource, useToast } from "./components";
-import type { Agent, GeneratedArtifact, Model, ReasoningTrace, Run, Session, SessionDetail } from "./types";
+import type { Agent, GeneratedArtifact, Model, ReasoningEffort, ReasoningTrace, Run, Session, SessionDetail } from "./types";
 import type { AGUIEvent } from "./ag-ui";
 import { messageRunId } from "./ag-ui";
 import { useAgentRun } from "./useAgentRun";
@@ -15,12 +15,22 @@ import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
 
 const query = () => new URLSearchParams(location.hash.split("?")[1] ?? "");
+const reasoningOptions: { value: ReasoningEffort; label: string }[] = [
+  { value: "none", label: "不思考" },
+  { value: "minimal", label: "最低" },
+  { value: "low", label: "低" },
+  { value: "medium", label: "中" },
+  { value: "high", label: "高" },
+  { value: "xhigh", label: "很高" },
+  { value: "max", label: "最高" },
+];
 export function Playground({ name }: { name?: string }) {
   const tenantScope = useRef(getTenantId()).current;
   const scopeRevision = useRef(getScopeRevision()).current;
   const agents = useResource<{ items: Agent[] }>("/agents");
   const models = useResource<{ items: Model[] }>("/models");
   const [modelId, setModelId] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort | "">("");
   const sessions = useResource<{ items: Session[] }>("/sessions");
   const [agentId, setAgentId] = useState(query().get("agent") ?? "");
   const [sessionId, setSessionId] = useState<string | null>(
@@ -47,6 +57,7 @@ export function Playground({ name }: { name?: string }) {
     message: string;
     session: string;
     model: string;
+    reasoning: ReasoningEffort | "";
     key: string;
     messageId: string;
   } | null>(null);
@@ -99,6 +110,7 @@ export function Playground({ name }: { name?: string }) {
       if (next.has("agent")) {
         setAgentId(next.get("agent")!);
         setModelId("");
+        setReasoningEffort("");
         setSessionId(null);
       }
     };
@@ -183,12 +195,14 @@ export function Playground({ name }: { name?: string }) {
         !sendKey.current ||
         sendKey.current.message !== message ||
         sendKey.current.session !== id ||
-        sendKey.current.model !== modelId
+        sendKey.current.model !== modelId ||
+        sendKey.current.reasoning !== reasoningEffort
       )
         sendKey.current = {
           message,
           session: id,
           model: modelId,
+          reasoning: reasoningEffort,
           key: crypto.randomUUID(),
           messageId: crypto.randomUUID(),
         };
@@ -200,7 +214,7 @@ export function Playground({ name }: { name?: string }) {
       await start({
         threadId: id, runId: sendKey.current.key, protocolVersion: "1.0",
         messages: [{ id: sendKey.current.messageId, role: "user", content: message }],
-        state: {}, tools: [], context: [], forwardedProps: { modelId: modelId || null },
+        state: {}, tools: [], context: [], forwardedProps: { modelId: modelId || null, reasoningEffort: reasoningEffort || null },
       });
       if (!scopeIsCurrent(scopeRevision)) return;
       setDraft("");
@@ -272,7 +286,7 @@ export function Playground({ name }: { name?: string }) {
       <Select id="active-agent" className="pg-agent-picker" variant="quiet" icon={<Bot size={18} />} aria-label="当前 Agent"
         value={detail?.agent_id ?? agentId} disabled={Boolean(sessionId) || busy || Boolean(activeRun) || agents.loading}
         title={sessionId ? "新建对话后可切换 Agent" : "选择已发布的 Agent"} searchable
-        onChange={(event) => { setAgentId(event.target.value); setModelId(""); }}>
+        onChange={(event) => { setAgentId(event.target.value); setModelId(""); setReasoningEffort(""); }}>
         <option value="" disabled>选择 Agent</option>
         {published.map((agent) => <option value={agent.id} key={agent.id} data-description={agent.description}>{agent.name}</option>)}
       </Select>
@@ -335,11 +349,24 @@ export function Playground({ name }: { name?: string }) {
               }
             }} />
           <div className="pg-composer-toolbar">
+            <div className="pg-run-settings">
             <Select id="run-model" variant="quiet" className="pg-model-picker" aria-label="本次使用模型" icon={<Sparkles size={15} />}
               value={modelId} disabled={busy || Boolean(activeRun) || models.loading} searchable onChange={(event) => setModelId(event.target.value)}>
               <option value="">{automaticModel ? `${automaticModel.name} · 自动` : selectedAgent?.model_id ? "跟随 Agent 设置" : "自动选择模型"}</option>
               {availableModels.map((model) => <option key={model.id} value={model.id} data-description={model.alias}>{model.name}{model.is_default ? " · 默认" : ""}</option>)}
             </Select>
+            <Select id="run-reasoning" variant="quiet" className="pg-reasoning-picker" aria-label="本次思考强度" icon={<Brain size={15} />}
+              value={reasoningEffort} disabled={busy || loading || Boolean(activeRun)} title="应用于下一次发送；自动沿用 Agent 或模型设置"
+              onChange={(event) => {
+                const value = event.target.value;
+                const option = reasoningOptions.find((option) => option.value === value);
+                if (value === "") setReasoningEffort("");
+                else if (option) setReasoningEffort(option.value);
+              }}>
+              <option value="" data-description="沿用 Agent 或模型的默认思考设置">思考：自动</option>
+              {reasoningOptions.map((option) => <option key={option.value} value={option.value}>思考：{option.label}</option>)}
+            </Select>
+            </div>
             <span className="pg-keyboard-hint">Enter 发送</span>
             {activeRun ? <Button type="button" variant="secondary" className="pg-stop" onClick={() => void cancel()} busy={canceling}
               title="停止生成不会免除已产生的费用"><CircleStop size={17} /><span>停止生成</span></Button>

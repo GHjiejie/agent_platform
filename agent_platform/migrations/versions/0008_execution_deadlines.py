@@ -18,6 +18,10 @@ depends_on = None
 
 def upgrade():
     legacy_timeout = float(os.getenv("PLATFORM_RUN_TIMEOUT", "300"))
+    if legacy_timeout == 0:
+        # New installations can disable execution deadlines. Queue admission
+        # remains bounded independently of that setting.
+        legacy_timeout = float(os.getenv("PLATFORM_QUEUE_TIMEOUT", "300"))
     if not math.isfinite(legacy_timeout) or legacy_timeout <= 0:
         raise ValueError("PLATFORM_RUN_TIMEOUT must be finite and positive")
     op.add_column("platform_runs", sa.Column("queue_expires_at", sa.Float()))

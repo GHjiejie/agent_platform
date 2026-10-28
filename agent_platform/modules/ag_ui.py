@@ -41,6 +41,7 @@ from sqlalchemy import select
 
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure.errors import PlatformError
+from agent_platform.modules.execution_policy import ReasoningEffort
 from agent_platform.modules.reasoning import reasoning_message, session_reasoning
 from agent_platform.modules.runtime.generative_ui import UI_ACTIVITY, activity_content
 
@@ -61,6 +62,9 @@ class ForwardedProps(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
     model_id: str | None = Field(
         default=None, alias="modelId", min_length=1, max_length=64
+    )
+    reasoning_effort: ReasoningEffort | None = Field(
+        default=None, alias="reasoningEffort"
     )
 
 
@@ -135,6 +139,7 @@ def enqueue(
         content.strip(),
         f"ag-ui:{body.run_id}",
         body.forwarded_props.model_id,
+        reasoning_effort=body.forwarded_props.reasoning_effort,
         ag_ui={"run_id": body.run_id, "message_id": last.id},
         admit_stream=True,
         resume_sequence=resume_sequence,

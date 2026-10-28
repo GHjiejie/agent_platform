@@ -19,6 +19,7 @@ from agent_platform.infrastructure import runtime_tables as rt
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.config import Settings
+from agent_platform.infrastructure.errors import PlatformError
 from agent_platform.modules import ag_ui
 from agent_platform.modules.gateway_control import GatewayService
 from agent_platform.modules.run_records import append_event, now, uid
@@ -237,6 +238,47 @@ class AgUIContractTests(unittest.IsolatedAsyncioTestCase):
             response = await asyncio.wait_for(request, 3)
         self.assertEqual(response.status_code, 200, response.text)
         return claimed, response, frames(response.text)
+
+    async def test_composer_reasoning_override_is_frozen_and_does_not_edit_agent(self):
+        self.platform.save_agent(
+            self.user,
+            {"execution_policy": {"reasoning_effort": "high"}},
+            self.agent["id"],
+        )
+        self.platform.publish(self.user, self.agent["id"])
+        self.body["forwardedProps"]["reasoningEffort"] = "low"
+        run = self.protocol_run()
+        with self.db.read() as connection:
+            spec = connection.scalar(
+                select(t.runs.c.spec).where(t.runs.c.id == run["id"])
+            )
+            self.assertEqual(spec["execution_policy"]["reasoning_effort"], "low")
+            inference, _ = Worker(self.platform)._resolve_inference(
+                {"tenant_id": self.tenant, "spec": spec}
+            )
+            self.assertEqual(inference.reasoning_effort, "low")
+            published = connection.scalar(
+                select(t.agent_versions.c.spec).where(
+                    t.agent_versions.c.agent_id == self.agent["id"],
+                    t.agent_versions.c.version == 2,
+                )
+            )
+            self.assertEqual(published["execution_policy"]["reasoning_effort"], "high")
+        self.assertEqual(self.protocol_run()["id"], run["id"])
+        self.body["forwardedProps"]["reasoningEffort"] = "medium"
+        with self.assertRaises(PlatformError) as caught:
+            self.protocol_run()
+        self.assertEqual(caught.exception.code, "idempotency_conflict")
+        self.complete(run)
+        self.body["runId"] = "inherit-reasoning"
+        self.body["messages"][0]["id"] = "inherit-reasoning-message"
+        self.body["forwardedProps"]["reasoningEffort"] = None
+        inherited = self.protocol_run()
+        with self.db.read() as connection:
+            spec = connection.scalar(
+                select(t.runs.c.spec).where(t.runs.c.id == inherited["id"])
+            )
+            self.assertEqual(spec["execution_policy"]["reasoning_effort"], "high")
 
     async def test_readable_reasoning_streams_persists_and_resumes_at_each_phase(self):
         run, response, events = await self.execute_request(ReasoningInference())
@@ -700,6 +742,7 @@ class AgUIContractTests(unittest.IsolatedAsyncioTestCase):
                 },
                 {**self.body, "state": {"system_prompt": "override"}},
                 {**self.body, "forwardedProps": {"baseUrl": "http://untrusted"}},
+                {**self.body, "forwardedProps": {"reasoningEffort": "invalid"}},
                 {
                     **self.body,
                     "messages": [{"id": "bad", "role": "user", "content": " "}],

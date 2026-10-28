@@ -2,6 +2,7 @@
 
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,7 @@ from sqlalchemy import insert, select, update
 
 from agent_platform.apps.api.main import COOKIE, create_app
 from agent_platform.infrastructure import tables as t
+from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.config import Settings
 from agent_platform.infrastructure.errors import PlatformError
 from agent_platform.modules.gateway_control import GatewayService
@@ -57,6 +59,7 @@ class APIIntegrationTest(unittest.TestCase):
             operator_emails=("admin@example.test",),
             secret_encryption_key=Fernet.generate_key().decode(),
             embedded_worker=False,
+            run_timeout=300,
             litellm_url="http://test",
             litellm_key="test",
             litellm_admin_url="http://127.0.0.1:4017/ui",
@@ -150,6 +153,31 @@ class APIIntegrationTest(unittest.TestCase):
         self.assertEqual(
             self.request("GET", f"/sessions/{session['id']}").json()["messages"], []
         )
+
+    def test_run_reasoning_override_is_validated_frozen_and_part_of_idempotency(self):
+        _, _, session = self.create_resources()
+        path = f"/sessions/{session['id']}/runs"
+        invalid = self.request(
+            "POST",
+            path,
+            key="reasoning",
+            json={"message": "Test", "reasoning_effort": "invalid"},
+        )
+        self.assertEqual(invalid.status_code, 422)
+        body = {"message": "Test", "reasoning_effort": "low"}
+        accepted = self.request("POST", path, key="reasoning", json=body)
+        self.assertEqual(accepted.status_code, 202, accepted.text)
+        with self.db.read() as connection:
+            spec = connection.scalar(
+                select(t.runs.c.spec).where(t.runs.c.id == accepted.json()["id"])
+            )
+        self.assertEqual(spec["execution_policy"]["reasoning_effort"], "low")
+        retry = self.request("POST", path, key="reasoning", json=body)
+        self.assertEqual(retry.json()["id"], accepted.json()["id"])
+        conflict = self.request(
+            "POST", path, key="reasoning", json={**body, "reasoning_effort": "high"}
+        )
+        self.assertEqual(conflict.status_code, 409)
 
     def test_execution_policy_is_editable_validated_and_published(self):
         options = self.request("GET", "/agents/execution-options")
@@ -783,6 +811,200 @@ class APIIntegrationTest(unittest.TestCase):
         self.assertIn("samesite=strict", cookie)
         self.assertNotIn("token", response.json())
 
+    def test_first_login_registers_an_unprivileged_identity_and_reuses_it(self):
+        email = "new-login@example.test"
+        account = self.login(f"  {email.upper()}  ")
+        user = account["user"]
+        self.assertEqual(user["email"], email)
+        self.assertEqual(user["name"], "new-login")
+        self.assertEqual(user["memberships"], [])
+        self.assertEqual(user["platform_roles"], [])
+        self.assertEqual(user["capabilities"], [])
+        self.assertNotIn("password_hash", user)
+        self.assertEqual(self.client.get("/api/v2/me").json()["user"], user)
+        self.assertEqual(self.request("GET", "/agents", auth=account).status_code, 404)
+        again = self.login(email)
+        self.assertEqual(again["user"]["id"], user["id"])
+        with self.db.read() as connection:
+            rows = (
+                connection.execute(select(t.users).where(t.users.c.email == email))
+                .mappings()
+                .all()
+            )
+            self.assertEqual(len(rows), 1)
+            self.assertNotEqual(rows[0]["password_hash"], PASSWORD)
+            self.assertIsNone(rows[0]["email_verified_at"])
+            registrations = connection.execute(
+                select(nt.operation_audits).where(
+                    nt.operation_audits.c.action == "identity.register",
+                    nt.operation_audits.c.target == user["id"],
+                )
+            ).all()
+            self.assertEqual(len(registrations), 1)
+
+    def test_existing_login_never_registers_or_replaces_the_password(self):
+        with self.db.read() as connection:
+            before = dict(
+                connection.execute(
+                    select(t.users).where(t.users.c.email == self.settings.admin_email)
+                )
+                .mappings()
+                .one()
+            )
+        wrong = self.client.post(
+            "/api/v1/auth/login",
+            json={
+                "email": self.settings.admin_email,
+                "password": "Different-password-42",
+            },
+        )
+        self.assertEqual(wrong.status_code, 401)
+        self.assertEqual(self.login()["user"]["id"], before["id"])
+        with self.db.transaction("identity:suspended-registration-test") as connection:
+            connection.execute(
+                update(t.users).where(t.users.c.id == before["id"]).values(active=False)
+            )
+        disabled = self.client.post(
+            "/api/v1/auth/login",
+            json={"email": self.settings.admin_email, "password": PASSWORD},
+        )
+        self.assertEqual(disabled.status_code, 401)
+        with self.db.read() as connection:
+            after = (
+                connection.execute(
+                    select(t.users).where(t.users.c.email == self.settings.admin_email)
+                )
+                .mappings()
+                .one()
+            )
+            self.assertEqual(after["id"], before["id"])
+            self.assertEqual(after["password_hash"], before["password_hash"])
+            self.assertFalse(after["active"])
+
+    def test_registration_validates_inputs_and_preserves_password_whitespace(self):
+        email = "registration-validation@example.test"
+        for values in (
+            {"email": "invalid-email", "password": PASSWORD},
+            {"email": email, "password": "tiny"},
+            {"email": email, "password": PASSWORD, "role": "admin"},
+            {"email": email, "password": PASSWORD, "tenant_id": self.tenant},
+        ):
+            with self.subTest(fields=tuple(values)):
+                response = self.client.post("/api/v1/auth/login", json=values)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertNotIn(values["password"], response.text)
+        with self.db.read() as connection:
+            self.assertIsNone(
+                connection.scalar(select(t.users.c.id).where(t.users.c.email == email))
+            )
+        password = "  Registration password with spaces  "
+        self.login(email, password)
+        trimmed = self.client.post(
+            "/api/v1/auth/login", json={"email": email, "password": password.strip()}
+        )
+        self.assertEqual(trimmed.status_code, 401)
+        self.login(email, password)
+
+    def test_invited_user_can_register_and_accept_without_platform_provisioning(self):
+        email = "invited-new-login@example.test"
+        invitation = self.request(
+            "POST", "/invitations", json={"email": email, "role": "member"}
+        )
+        self.assertEqual(invitation.status_code, 201, invitation.text)
+        other = self.login("different-new-login@example.test")
+        mismatch = self.client.post(
+            "/api/v2/invitations/accept",
+            headers={"X-CSRF-Token": other["csrf_token"]},
+            json={"token": invitation.json()["token"]},
+        )
+        self.assertEqual(mismatch.status_code, 403)
+        self.assertEqual(
+            mismatch.json()["error"]["code"], "invitation_identity_mismatch"
+        )
+        account = self.login(email)
+        self.assertEqual(account["user"]["memberships"], [])
+        accepted = self.client.post(
+            "/api/v2/invitations/accept",
+            headers={"X-CSRF-Token": account["csrf_token"]},
+            json={"token": invitation.json()["token"]},
+        )
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        self.assertEqual(accepted.json()["tenant_id"], self.tenant)
+        identity = self.client.get("/api/v2/me").json()["user"]
+        self.assertEqual(len(identity["memberships"]), 1)
+        self.assertEqual(identity["memberships"][0]["role"], "member")
+        self.assertEqual(identity["platform_roles"], [])
+
+    def test_concurrent_first_logins_keep_one_identity_and_the_winning_password(self):
+        email = "concurrent-new-login@example.test"
+        passwords = ("Concurrent-password-A-42", "Concurrent-password-B-42")
+
+        def attempt(password):
+            try:
+                return self.platform.login(email, password, "registration-race")
+            except PlatformError as error:
+                return error
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(attempt, passwords))
+        successes = [
+            index for index, value in enumerate(results) if isinstance(value, dict)
+        ]
+        self.assertEqual(len(successes), 1)
+        winner = successes[0]
+        loser = results[1 - winner]
+        self.assertIsInstance(loser, PlatformError)
+        self.assertEqual(loser.status, 401)
+        self.login(email, passwords[winner])
+        with self.db.read() as connection:
+            self.assertEqual(
+                len(
+                    connection.execute(
+                        select(t.users.c.id).where(t.users.c.email == email)
+                    ).all()
+                ),
+                1,
+            )
+
+    def test_registration_attempts_share_the_login_rate_limit(self):
+        body = {"email": "rate-limited-registration@example.test", "password": "short"}
+        for _ in range(10):
+            response = self.client.post("/api/v1/auth/login", json=body)
+            self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.post(
+            "/api/v1/auth/login", json={**body, "password": PASSWORD}
+        )
+        self.assertEqual(response.status_code, 429)
+        with self.db.read() as connection:
+            self.assertIsNone(
+                connection.scalar(
+                    select(t.users.c.id).where(t.users.c.email == body["email"])
+                )
+            )
+
+    def test_public_registration_cannot_claim_reserved_operator_emails(self):
+        emails = ("reserved-admin@example.test", "reserved-operator@example.test")
+        settings = replace(
+            self.settings, admin_email=emails[0], operator_emails=(emails[1],)
+        )
+        with patch.object(self.platform, "settings", settings):
+            for email in emails:
+                with self.subTest(email=email):
+                    response = self.client.post(
+                        "/api/v1/auth/login",
+                        json={"email": email, "password": PASSWORD},
+                    )
+                    self.assertEqual(response.status_code, 403)
+                    self.assertEqual(
+                        response.json()["error"]["code"], "registration_restricted"
+                    )
+                    with self.db.read() as connection:
+                        self.assertIsNone(
+                            connection.scalar(
+                                select(t.users.c.id).where(t.users.c.email == email)
+                            )
+                        )
+
     def test_validation_never_echoes_password_or_accepts_extra_tenant(self):
         before = self.request("GET", "/users").json()["items"]
         secret = "top-secret-password"
@@ -802,15 +1024,16 @@ class APIIntegrationTest(unittest.TestCase):
         self.assertEqual(self.request("GET", "/users").json()["items"], before)
 
     def test_login_failures_are_rate_limited(self):
+        email = self.fixture.member["email"]
         for _ in range(10):
             response = self.client.post(
                 "/api/v1/auth/login",
-                json={"email": "missing@example.test", "password": "Wrong"},
+                json={"email": email, "password": "Wrong"},
             )
             self.assertEqual(response.status_code, 401, response.text)
         response = self.client.post(
             "/api/v1/auth/login",
-            json={"email": "missing@example.test", "password": "Wrong"},
+            json={"email": email, "password": "Wrong"},
         )
         self.assertEqual(response.status_code, 429)
         self.assertEqual(response.headers["retry-after"], "60")

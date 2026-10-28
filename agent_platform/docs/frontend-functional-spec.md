@@ -63,7 +63,7 @@ flowchart TD
 
 | 页面/入口 | 真实数据与操作 | 现有复用 | 关键限制 |
 | --- | --- | --- | --- |
-| 登录、账号、退出 | `/api/v1/auth/login`、`/auth/password`、`/auth/logout`；`/api/v2/me` | `App.tsx`、`api.ts` | Cookie + CSRF；没有公共注册、找回密码、MFA 或 OAuth 接口 |
+| 登录、账号、退出 | `/api/v1/auth/login`、`/auth/password`、`/auth/logout`；`/api/v2/me` | `App.tsx`、`api.ts` | Cookie + CSRF；未注册邮箱以至少 12 位密码自动注册并登录，新账号接受邀请后获得组织权限；没有邮箱验证、找回密码、MFA 或 OAuth 接口 |
 | 组织选择/上下文 | `GET /api/v2/me` memberships；`GET T` | `App.tsx`、`types.ts` | 切换时取消请求、SSE、轮询，丢弃旧租户结果；平台身份没有默认组织 |
 | 概览 `#overview` | `GET T/dashboard` | `DashboardPage` | 汇总范围由后端决定，非任意日期或用户筛选；网关配置布尔值不能证明真实可用 |
 | Agent `#agents` | `GET/POST T/agents`、`PATCH T/agents/{id}`、`POST .../publish` | `AgentsPage`、内置 starter prompts | 成员只看到发布版；编辑只改草稿，发布生成版本；没有删除/复制/多 Agent 编排接口 |

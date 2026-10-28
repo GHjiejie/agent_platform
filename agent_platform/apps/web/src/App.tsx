@@ -372,8 +372,8 @@ function Login({
             <span className="login-spark">
               <Sparkles size={24} />
             </span>
-            <h2>欢迎回来</h2>
-            <p>登录以进入你的 Agent 工作空间</p>
+            <h2>登录或注册</h2>
+            <p>使用工作邮箱进入你的 Agent 工作空间</p>
           </div>
           <form onSubmit={submit}>
             <Field label="工作邮箱">
@@ -382,6 +382,7 @@ function Login({
                 name="email"
                 autoComplete="username"
                 placeholder="you@company.com"
+                maxLength={254}
                 required
                 autoFocus
               />
@@ -392,6 +393,7 @@ function Login({
                 name="password"
                 autoComplete="current-password"
                 placeholder="输入你的登录密码"
+                maxLength={512}
                 required
               />
             </Field>
@@ -413,9 +415,9 @@ function Login({
             </Button>
           </form>
           <p className="login-help">
-            账号由工作空间管理员创建。
+            未注册的邮箱将自动创建账号并登录。
             <br />
-            首次部署请按项目说明初始化管理员账号。
+            首次使用请设置至少 12 位密码，已有账号请输入原密码。
           </p>
         </div>
         <span className="login-foot">让智能发生，让成本透明。</span>

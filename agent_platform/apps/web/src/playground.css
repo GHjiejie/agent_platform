@@ -25,9 +25,11 @@
 .pg-composer textarea { display: block; width: 100%; min-height: 48px; max-height: 180px; padding: 0 2px; border: 0; border-radius: 0; color: #41414f; background: transparent; font-size: 14px; line-height: 1.85; resize: none; box-shadow: none !important; scrollbar-width: thin; }
 .pg-composer textarea::placeholder { color: #817b8b; }
 .pg-composer-toolbar { display: flex; gap: 12px; align-items: center; margin-top: 12px; min-height: 36px; }
-.pg-model-picker { width: auto; max-width: min(65%, 290px); min-width: 0; }
-.pg-model-picker .select-trigger { min-height: 33px; padding: 6px 8px; font-size: 11px; gap: 6px; }
-.pg-model-picker .select-icon { color: #8a7ab8; }
+.pg-run-settings { display: flex; flex: 0 1 auto; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.pg-model-picker { width: auto; max-width: 290px; min-width: 0; }
+.pg-reasoning-picker { width: auto; min-width: 0; flex-shrink: 0; }
+.pg-model-picker .select-trigger, .pg-reasoning-picker .select-trigger { min-height: 33px; padding: 6px 8px; font-size: 11px; gap: 6px; }
+.pg-model-picker .select-icon, .pg-reasoning-picker .select-icon { color: #8a7ab8; }
 .pg-keyboard-hint { margin-left: auto; font-size: 10px; color: #aaa7b3; white-space: nowrap; }
 .pg-send.button { margin-left: auto; width: 37px; height: 37px; min-height: 37px; padding: 0; border-radius: 50%; color: #fff; background: #7162d6; box-shadow: none; }
 .pg-keyboard-hint + .pg-send { margin-left: 0; }
@@ -114,7 +116,9 @@
   .pg-composer textarea { font-size: 13px; }
   .pg-keyboard-hint { display: none; }
   .pg-keyboard-hint + .pg-send, .pg-keyboard-hint + .pg-stop { margin-left: auto; }
-  .pg-model-picker { max-width: 78%; }
+  .pg-composer-toolbar { gap: 6px; }
+  .pg-run-settings { flex: 1; gap: 2px 6px; }
+  .pg-model-picker { max-width: 100%; }
   .pg-suggestions { padding-top: 15px; gap: 8px; }
   .pg-suggestions button { font-size: 10px; padding: 9px 11px; }
   .pg-disclaimer { font-size: 9px; padding-top: 10px; }

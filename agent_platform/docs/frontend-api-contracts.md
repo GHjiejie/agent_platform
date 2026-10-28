@@ -34,7 +34,7 @@
 
 ### 登录、账号与工作空间（App.tsx）
 
-- POST /api/v1/auth/login，body {email:string,password:string} → {user:IdentityUser,csrf_token} + HttpOnly session cookie；email 3–254，password 1–512。main.py:277–295；schemas.py:13–16。登录提交 busy/disabled；错误 form-error；成功 refreshIdentity（App.tsx:293–311）。
+- POST /api/v1/auth/login，body {email:string,password:string} → {user:IdentityUser,csrf_token} + HttpOnly session cookie；email 去首尾空白并转小写后校验邮箱格式和 3–254 长度，password 1–512 且保留空白。未注册邮箱首次提交至少 12 位密码后自动注册并登录，新账号没有 membership 或平台角色；已有邮箱继续验证原密码。登录提交 busy/disabled；错误 form-error；成功 refreshIdentity，并保留原邀请链接。
 - GET /api/v2/me → {user,csrf_token}；GET T → {tenant,user}；POST /api/v1/auth/logout 无 body→{ok:true}；POST /api/v1/auth/password {current_password,new_password(12–512)}→{ok:true} 后清 session 重新登录。main.py:301–317、702–704；App.tsx:132–141、272–280。
 - 不要新增前端角色硬编码鉴权：导航以 capability 为主。overview/playground=runs.execute；agents=agents.read；runs=runs.read_own；models=models.read；usage=billing.read_own 或 usage.read_all；billing=billing.read；users=members.manage；quotas=quotas.manage；audit=audit.read；support-access=ownership.manage；平台入口由平台能力门控。App.tsx:16–31、145–150。
 
@@ -212,7 +212,7 @@ type PlatformAudit = {
 
 |method/path|body/query/headers|success shape|授权与错误|
 |---|---|---|---|
-|POST `/api/v1/auth/login`|`{email:string(3–254),password:string(1–512)}`；无CSRF要求|200 `{user:GlobalIdentity,csrf_token:string}` + set-cookie|401 invalid_credentials；5分钟窗口email10次/IP50次后429 login_rate_limited|
+|POST `/api/v1/auth/login`|`{email:string(邮箱格式,3–254),password:string(1–512)}`；无CSRF要求|200 `{user:GlobalIdentity,csrf_token:string}` + set-cookie；新邮箱自动创建账号|新账号密码不足12位时422 registration_password_too_short；预留管理员/运营邮箱不能自助注册，403 registration_restricted；已有账号密码错误/停用时401 invalid_credentials；5分钟窗口email10次/IP50次后429 login_rate_limited|
 |GET `/api/v2/me`|无|200 `{user:GlobalIdentity,csrf_token:string}`|已登录；可无membership仍返回|
 |GET `/api/v1/auth/me`|无|同上|旧兼容入口|
 |POST `/api/v1/auth/logout`|无body，CSRF|200 `{ok:true}` +删除当前cookie/session|只注销本会话|
@@ -220,7 +220,11 @@ type PlatformAudit = {
 
 出处 `main.py:277–317,702–704`; `schemas.py:13–22`; `platform.py:251–352,499–539`。
 
-不存在：自助注册、验证码登录、邮箱验证操作、忘记密码/管理员重置密码、SSO接口。`email_verified_at`虽然存在于users表，以上未找到对应路由。平台创建用户是人工provisioning，不能当公开注册。
+自助注册已合并在登录接口中：新邮箱创建账号并立即建立会话；并发首次登录只保留一个账号且不会替换胜出请求设置的密码。默认姓名取邮箱前缀（最多120字符），不创建组织、membership、平台角色或额度。平台管理员仍可人工预开通账号。
+
+配置中的初始管理员邮箱与平台运营邮箱为预留账号，不允许通过公开登录入口创建，以免后续初始化按邮箱自动授予平台权限；这些邮箱已有账号时仍可正常登录。
+
+不存在：验证码登录、邮箱验证操作、忘记密码/管理员重置密码、SSO接口。自动注册不表示验证了邮箱所有权，`email_verified_at` 保持为空；当前也没有邮件发送服务。
 
 ### B. 组织选择、成员与邀请 UI
 
@@ -294,7 +298,7 @@ Entitlements PUT所有字段可选；除max_budget明确null外，null被排除�
 {"role":"platform_support","active":true,"reason":"授权本周客户排障支持"}
 ```
 
-创建组织schema允许owner_email已注册，不存在公开注册流程。global账号provision先在独立事务完成，再调用create_tenant事务，所以tenant创建后续失败可能留下无membership账号；UI重试应使用同email/同幂等key，不能宣称整个“新账号+新组织”单一事务回滚。`tenancy.py:183–224`。
+创建组织schema允许owner_email已通过统一登录入口注册，也允许平台运营预开通账号。global账号provision先在独立事务完成，再调用create_tenant事务，所以tenant创建后续失败可能留下无membership账号；UI重试应使用同email/同幂等key，不能宣称整个“新账号+新组织”单一事务回滚。`tenancy.py:183–224`。
 
 平台账务入口存在：POST `/platform/tenants/{id}/credits`（Idempotency-Key、Credit amount/description）、GET `/billing/wallet`、GET `/billing/reservations`、POST `/billing/reservations/{call_id}/resolve`（Idempotency-Key）、POST `/billing/unblock`。这里所有入口require platform.billing.manage，不是platform_admin；账务响应由BillingService真实返回，细节由账务规格负责。`tenancy.py:268–324`。
 

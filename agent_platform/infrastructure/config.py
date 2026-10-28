@@ -44,7 +44,8 @@ class Settings:
     embedded_worker: bool = False
     session_hours: int = 24
     queue_timeout: int = 300
-    run_timeout: int = 300
+    # Zero disables the total execution deadline; queue/transport leases remain bounded.
+    run_timeout: int = 0
     model_timeout: int = 90
     max_run_cost: str = "1"
     worker_poll_seconds: float = 0.5
@@ -74,8 +75,21 @@ class Settings:
             )
         for name in ("queue_timeout", "run_timeout"):
             value = getattr(self, name)
-            if isinstance(value, bool) or not math.isfinite(value) or value <= 0:
-                raise ValueError(f"PLATFORM_{name.upper()} must be finite and positive")
+            unlimited = name == "run_timeout"
+            if (
+                isinstance(value, bool)
+                or not math.isfinite(value)
+                or value < 0
+                or (value == 0 and not unlimited)
+            ):
+                raise ValueError(
+                    f"PLATFORM_{name.upper()} must be finite and "
+                    + (
+                        "nonnegative (0 disables the deadline)"
+                        if unlimited
+                        else "positive"
+                    )
+                )
         if self.mode == "saas":
             if not self.database_url.startswith("postgresql"):
                 raise ValueError("SaaS mode requires PostgreSQL")
@@ -184,7 +198,7 @@ class Settings:
             embedded_worker=os.getenv("PLATFORM_EMBEDDED_WORKER", "false").lower()
             == "true",
             queue_timeout=int(os.getenv("PLATFORM_QUEUE_TIMEOUT", "300")),
-            run_timeout=int(os.getenv("PLATFORM_RUN_TIMEOUT", "300")),
+            run_timeout=int(os.getenv("PLATFORM_RUN_TIMEOUT", "0")),
             model_timeout=int(os.getenv("PLATFORM_MODEL_TIMEOUT", "90")),
             max_run_cost=os.getenv("PLATFORM_MAX_RUN_COST", "1"),
         )

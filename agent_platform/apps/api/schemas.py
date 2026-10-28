@@ -13,6 +13,7 @@ from agent_platform.modules.execution_policy import (
     MAX_MODEL_CALLS,
     MAX_OUTPUT_TOKENS,
     ExecutionPolicy,
+    ReasoningEffort,
 )
 
 
@@ -22,8 +23,15 @@ class StrictModel(BaseModel):
 
 class Login(StrictModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
-    email: str = Field(min_length=3, max_length=254)
+    email: str = Field(
+        min_length=3, max_length=254, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$"
+    )
     password: str = Field(min_length=1, max_length=512)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value):
+        return value.strip().lower() if isinstance(value, str) else value
 
 
 class PasswordChange(StrictModel):
@@ -135,6 +143,7 @@ class SessionCreate(StrictModel):
 class RunCreate(StrictModel):
     message: str = Field(min_length=1, max_length=32000)
     model_id: str | None = Field(default=None, min_length=1, max_length=64)
+    reasoning_effort: ReasoningEffort | None = None
 
 
 class Credit(StrictModel):

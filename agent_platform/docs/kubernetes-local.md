@@ -50,7 +50,7 @@ API 镜像不编译或打包前端。`deploy/Dockerfile` 提供 api、worker、g
 - API `/api/v1/health` 是进程存活检查，`/api/v1/ready` 检查 schema 和 Redis，不要求其他角色心跳。
 - 后台使用 `python -m agent_platform.scripts.service_probe <role>`，检查 schema 和自己的 Pod UID 心跳。另一副本不能替坏副本通过探针。
 - `/api/v1/platform-status` 保留聚合后台状态，需要平台组织管理权限，不参与 API readiness。
-- Worker 收到 SIGTERM 后停止领取新任务，等待已领取运行完成。Chart 要求宽限期至少为 `runTimeout + 30` 秒。
+- Worker 收到 SIGTERM 后停止领取新任务，等待已领取运行完成。`runTimeout` 默认 `0`，不限制正常执行时间；此时 Pod 关闭仍受 `terminationGracePeriodSeconds` 限制。设置正数时，Chart 要求关闭宽限期至少为 `runTimeout + 30` 秒。
 
 单个服务更新不会执行全栈 drain、发布其他 Chart 或隐式迁移数据库。当前 SQLite 服务一个副本并使用 Recreate，更新仍会有短暂中断；Web、网关或数据库升级也可能影响各自的直接调用方。
 

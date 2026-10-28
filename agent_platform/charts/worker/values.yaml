@@ -40,14 +40,15 @@ sqliteStorage:
 replicaCount: 1
 strategy:
   type: RollingUpdate
-# Must be at least config.runTimeout + 30; templates reject a shorter grace.
+# For bounded runs, must be at least config.runTimeout + 30. With unlimited
+# execution this controls shutdown grace only, not the task's normal lifetime.
 terminationGracePeriodSeconds: 360
 config:
   mode: saas
   redisUrl: redis://redis:6379/0
   litellmUrl: http://litellm:4000/v1
   concurrency: 4
-  runTimeout: 300
+  runTimeout: 0
   modelTimeout: 90
   maxRunCost: "1"
 # Only the encryption key is projected; the entire Secret is never imported.

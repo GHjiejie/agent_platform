@@ -44,8 +44,8 @@ def read_policy(spec: dict) -> ExecutionPolicy:
 
 def effective_limits(policy: ExecutionPolicy, settings) -> dict:
     return {
-        "timeout_seconds": min(
-            policy.timeout_seconds or settings.run_timeout, settings.run_timeout
+        "timeout_seconds": execution_timeout(
+            policy.timeout_seconds, settings.run_timeout
         ),
         "max_cost": str(
             min(
@@ -54,3 +54,8 @@ def effective_limits(policy: ExecutionPolicy, settings) -> dict:
             )
         ),
     }
+
+
+def execution_timeout(*limits: float | None) -> int | float | None:
+    """None/zero means unlimited; any explicit positive limit still applies."""
+    return min((value for value in limits if value), default=None)

@@ -99,7 +99,7 @@ def create_smoke_app():
         litellm_url="http://127.0.0.1:1",
         embedded_worker=True,
         worker_poll_seconds=0.05,
-        run_timeout=60,
+        run_timeout=0,
         export_directory=Path(directory.name) / "exports",
         tombstone_path=Path(directory.name) / "tombstones.jsonl",
     )

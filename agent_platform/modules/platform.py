@@ -21,6 +21,7 @@ from sqlalchemy import (
     select,
     update,
 )
+from sqlalchemy.exc import IntegrityError
 
 from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import runtime_tables as rt
@@ -33,6 +34,7 @@ from agent_platform.modules.authorization import capabilities, require_capabilit
 from agent_platform.modules.billing.service import BillingService, reservations_table
 from agent_platform.modules.builtin_agents import BUILTIN_AGENTS, COMMON_INSTRUCTIONS
 from agent_platform.modules.execution_policy import (
+    ReasoningEffort,
     effective_limits,
     read_policy,
 )
@@ -256,6 +258,77 @@ class Platform:
                 .values(default_model_id=model_id)
             )
 
+    def _register_identity(self, email: str, password: str) -> dict:
+        operator_emails = self.settings.operator_emails
+        if isinstance(operator_emails, str):
+            operator_emails = operator_emails.split(",")
+        reserved = {
+            value.strip().lower()
+            for value in (self.settings.admin_email, *operator_emails)
+        }
+        if email in reserved:
+            raise PlatformError(
+                403,
+                "registration_restricted",
+                "此邮箱预留用于平台管理，请联系平台管理员开通账号。",
+            )
+        if len(password) < 12:
+            raise PlatformError(
+                422,
+                "registration_password_too_short",
+                "此邮箱尚未注册，首次登录请设置至少 12 位密码。",
+            )
+        password_hash = hasher.hash(password)
+        with self.db.transaction("identity:provision") as connection:
+            existing = (
+                connection.execute(select(t.users).where(t.users.c.email == email))
+                .mappings()
+                .first()
+            )
+            if existing:
+                return dict(existing)
+            # The legacy home reference grants no organization access. Only an
+            # accepted invitation creates a membership for a new identity.
+            home = connection.scalar(
+                select(t.tenants.c.id).order_by(t.tenants.c.created_at).limit(1)
+            )
+            if not home:
+                raise PlatformError(409, "platform_not_initialized", "请先初始化平台。")
+            user = {
+                "id": uid(),
+                "tenant_id": home,
+                "email": email,
+                "name": email.split("@", 1)[0][:120],
+                "password_hash": password_hash,
+                "role": "member",
+                "active": True,
+                "global_status": "active",
+                "auth_version": 1,
+                "created_at": now(),
+            }
+            try:
+                with connection.begin_nested():
+                    connection.execute(insert(t.users).values(**user))
+            except IntegrityError:
+                # Another account-provisioning path may win the email race.
+                # Authenticate its password below rather than replacing it.
+                existing = (
+                    connection.execute(select(t.users).where(t.users.c.email == email))
+                    .mappings()
+                    .first()
+                )
+                if not existing:
+                    raise
+                return dict(existing)
+            self.identity._audit(
+                connection,
+                user["id"],
+                "identity.register",
+                user["id"],
+                details={"email": email},
+            )
+            return user
+
     def login(self, email: str, password: str, address: str) -> dict:
         email = email.strip().lower()
         window = int(time.time() // 300)
@@ -291,6 +364,8 @@ class Platform:
                 .mappings()
                 .first()
             )
+        if row is None:
+            row = self._register_identity(email, password)
         try:
             valid = hasher.verify(
                 row["password_hash"] if row else _DUMMY_HASH, password
@@ -601,6 +676,7 @@ class Platform:
                 ) from None
             if (
                 policy.timeout_seconds
+                and self.settings.run_timeout
                 and policy.timeout_seconds > self.settings.run_timeout
             ):
                 raise PlatformError(
@@ -718,6 +794,7 @@ class Platform:
         idempotency_key: str,
         model_id: str | None = None,
         *,
+        reasoning_effort: ReasoningEffort | None = None,
         ag_ui: dict | None = None,
         admit_stream: bool = False,
         resume_sequence: int = 0,
@@ -725,6 +802,8 @@ class Platform:
         request = {"session_id": session_id, "message": message}
         if model_id is not None:
             request["model_id"] = model_id
+        if reasoning_effort is not None:
+            request["reasoning_effort"] = reasoning_effort
         if ag_ui is not None:
             request["ag_ui"] = ag_ui
         fingerprint = digest(json.dumps(request, sort_keys=True))
@@ -810,6 +889,15 @@ class Platform:
             spec = dict(version["spec"], version=version["version"])
             spec["snapshot_schema_version"] = 2
             execution_policy = read_policy(spec)
+            if reasoning_effort is not None:
+                execution_policy = read_policy(
+                    {
+                        "execution_policy": {
+                            **execution_policy.model_dump(),
+                            "reasoning_effort": reasoning_effort,
+                        }
+                    }
+                )
             spec["execution_policy"] = execution_policy.model_dump()
             spec["execution_limits"] = effective_limits(execution_policy, self.settings)
             policy = (

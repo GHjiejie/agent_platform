@@ -14,7 +14,9 @@ Agent 的模型调用与执行预算由开发者在“我的 Agent → 编辑草
 | 运行费用上限 | `execution_policy.max_cost` | 精确十进制字符串，单位 USD；留空继承平台费用上限 |
 | 输出上限恢复次数 | `execution_policy.max_output_recoveries` | 0 表示截断后停止；正数允许有限次重新请求完整结果 |
 
-平台提供 `GET /api/v2/tenants/{tenant_id}/agents/execution-options` 返回实际的运行时限、费用、调用次数和输出字段上限，编辑器据此展示限制。平台运行时限与费用防护分别来自 `PLATFORM_RUN_TIMEOUT` 和 `PLATFORM_MAX_RUN_COST`；开发者可以收紧，不能绕过平台及组织限额。供应商也有自己的参数支持范围和超时限制。
+平台提供 `GET /api/v2/tenants/{tenant_id}/agents/execution-options` 返回实际的运行时限、费用、调用次数和输出字段上限，编辑器据此展示限制。`PLATFORM_RUN_TIMEOUT` 默认 `0`，表示不限制总执行时间，接口的 `timeout_seconds` 返回 `null`。Agent 留空时同样不限时；显式填写正数仍会限制该 Agent。平台设置正数时，开发者只能在该上限内设置时限。费用防护来自 `PLATFORM_MAX_RUN_COST`。排队期限、Worker 心跳租约、手动停止、调用次数及费用限制独立生效；供应商和网络仍有自己的超时限制。
+
+Playground 输入框工具栏支持选择“本次思考强度”。“自动”沿用已发布 Agent 的设置，再继承模型网关默认值；显式选择覆盖本次运行的所有模型调用，写入不可变运行快照，不修改 Agent 或共享网关。AG-UI 使用 `forwardedProps.reasoningEffort`，普通创建运行接口使用 `reasoning_effort`；均只接受现有思考等级枚举。变更该值属于不同请求，不能复用原幂等键。
 
 已移除单次输出字段原有的 128000 限制，字段当前支持最高 2000000。模型目录仍必须登记真实输出能力和上下文大小。将 Agent 设为 1000000 不代表任何模型都能输出这么多；自动选择或在 Playground 切换模型时，运行快照使用 Agent 与实际模型上限的较小值；绑定固定模型的草稿超出模型登记上限时拒绝保存。
 

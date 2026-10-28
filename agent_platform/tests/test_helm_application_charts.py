@@ -321,7 +321,7 @@ class ApplicationChartTests(unittest.TestCase):
 
     def test_worker_requires_timeout_plus_thirty_seconds_before_kubernetes_kill(self):
         for overrides in (
-            ("terminationGracePeriodSeconds=329",),
+            ("config.runTimeout=300", "terminationGracePeriodSeconds=329"),
             ("config.runTimeout=400",),
         ):
             with self.subTest(overrides=overrides):
@@ -332,6 +332,10 @@ class ApplicationChartTests(unittest.TestCase):
             "worker",
             overrides=("config.runTimeout=400", "terminationGracePeriodSeconds=430"),
         )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_worker_accepts_unlimited_execution_with_independent_shutdown_grace(self):
+        result = self.command("worker", overrides=("config.runTimeout=0",))
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

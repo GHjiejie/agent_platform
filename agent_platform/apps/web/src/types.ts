@@ -47,7 +47,8 @@ export type Agent = {
 };
 export type Session = SessionResponse;
 export type TokenDefaults = { output_tokens: number; context_window: number };
-export type ExecutionOptions = { timeout_seconds: number; max_cost: string; max_steps: number; max_output_tokens: number; default_output_tokens?: number; default_context_window?: number };
+export type ReasoningEffort = NonNullable<ExecutionPolicy["reasoning_effort"]>;
+export type ExecutionOptions = { timeout_seconds: number | null; max_cost: string; max_steps: number; max_output_tokens: number; default_output_tokens?: number; default_context_window?: number };
 export type Run = RunResponse;
 export type Message = { id?: string; run_id?: string; role: string; content: string; created_at?: string };
 export type GeneratedArtifact = { id: string; run_id: string; content: unknown };

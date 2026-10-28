@@ -5,6 +5,50 @@ import { EventSchema } from "@ag-ui/core/schemas";
 // deployment or invoke a paid model with fixture credentials.
 test.skip(process.env.PLATFORM_AG_UI_SMOKE !== "1", "Requires tests.ag_ui_smoke_app on a separate loopback port");
 
+test("输入框思考强度：请求覆盖、运行中禁用和窄屏键盘操作", async ({ page, context }, info) => {
+  const login = await context.request.post("/api/v1/auth/login", { data: { email: "ag-ui-browser@example.test", password: "temporary-platform-fixture-password" } });
+  expect(login.status()).toBe(200);
+  const auth = await login.json();
+  const tenant = auth.user.memberships.find((item: { role: string }) => item.role === "owner").tenant_id as string;
+  const root = `/api/v2/tenants/${tenant}`;
+  await page.goto(`/#playground?tenant=${tenant}`);
+  await page.getByRole("combobox", { name: "当前 Agent", exact: true }).click();
+  await page.getByRole("option", { name: /AG-UI 联调助手/ }).click();
+  const reasoning = page.getByRole("combobox", { name: "本次思考强度", exact: true });
+  await expect(reasoning).toContainText("思考：自动");
+  await reasoning.click();
+  await page.getByRole("option", { name: "思考：低", exact: true }).click();
+  await expect(reasoning).toContainText("思考：低");
+  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+  await input.fill("等待取消");
+  const sent = page.waitForRequest((request) => request.method() === "POST" && request.url().endsWith("/ag-ui"));
+  await input.press("Enter");
+  expect((await sent).postDataJSON().forwardedProps.reasoningEffort).toBe("low");
+  await expect(page.getByRole("article", { name: "Agent 正在回复" })).toContainText("正在等待取消。");
+  await expect(reasoning).toBeDisabled();
+  const options = await (await context.request.get(`${root}/agents/execution-options`)).json();
+  expect(options.timeout_seconds).toBeNull();
+  await page.getByRole("button", { name: "停止生成" }).click();
+  await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
+  await expect(reasoning).toBeEnabled();
+  await expect(reasoning).toContainText("思考：低");
+  await page.getByRole("button", { name: "关闭通知", exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await reasoning.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("listbox", { name: "本次思考强度" })).toBeVisible();
+  await page.keyboard.press("Home");
+  for (let step = 0; step < 5; step++) await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Enter");
+  await expect(reasoning).toContainText("思考：高");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("composer-reasoning-mobile.png"), fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({ path: info.outputPath("composer-reasoning-desktop.png"), fullPage: true });
+  await context.request.post("/api/v1/auth/logout", { headers: { "X-CSRF-Token": auth.csrf_token } });
+});
+
 test("真实前后端 AG-UI：工具调用、刷新恢复、取消和费用凭据", async ({ page, context }, info) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

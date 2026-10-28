@@ -650,8 +650,8 @@ function AgentEditor({
                 <option value="max">最高（max）</option>
               </Select>
             </Field>
-            <Field label="运行时限（秒）" hint={executionOptions ? `平台上限：${executionOptions.timeout_seconds} 秒。` : "留空继承平台运行时限。"}>
-              <input name="timeout_seconds" type="number" min={1} max={executionOptions?.timeout_seconds} step={1} defaultValue={policy?.timeout_seconds ?? ""} placeholder="继承平台" />
+            <Field label="运行时限（秒）" hint={executionOptions ? executionOptions.timeout_seconds == null ? "平台不限制总执行时间；留空不限时，可自行设置本 Agent 的时限。" : `平台上限：${executionOptions.timeout_seconds} 秒。` : "留空继承平台运行时限。"}>
+              <input name="timeout_seconds" type="number" min={1} max={executionOptions?.timeout_seconds ?? 86400} step={1} defaultValue={policy?.timeout_seconds ?? ""} placeholder={executionOptions?.timeout_seconds == null ? "不限时" : "继承平台"} />
             </Field>
             <Field label="累计 Token 预算" hint="覆盖本次运行全部模型调用的输入和输出；调用前按保守输入估算及输出预留检查。">
               <input name="max_total_tokens" type="number" min={1} max={2000000000} step={1} defaultValue={policy?.max_total_tokens ?? ""} placeholder="不另设累计 Token 限制" />

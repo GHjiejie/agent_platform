@@ -19,7 +19,11 @@ from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.errors import PlatformError
 from agent_platform.infrastructure.events import configure_notifications
 from agent_platform.modules.billing.service import BillingService, reservations_table
-from agent_platform.modules.execution_policy import effective_limits, read_policy
+from agent_platform.modules.execution_policy import (
+    effective_limits,
+    execution_timeout,
+    read_policy,
+)
 from agent_platform.modules.run_records import append_event, now, uid
 from agent_platform.modules.runtime.engine import RunCancelled, execute_agent
 from agent_platform.modules.runtime.gateway import Gateway, GatewayError, ModelReply
@@ -179,14 +183,19 @@ class Worker:
                     .get("execution_limits", {})
                     .get("timeout_seconds", self.settings.run_timeout)
                 )
-                run_timeout = min(frozen_timeout, self.settings.run_timeout)
+                run_timeout = execution_timeout(
+                    frozen_timeout, self.settings.run_timeout
+                )
+                deadline = started_at + run_timeout if run_timeout is not None else None
                 changes = {
                     "status": "running",
                     "owner": self.owner,
                     "fence": row["fence"] + 1,
                     "queue_expires_at": queue_expires_at,
-                    "lease_until": started_at + min(20, run_timeout),
-                    "deadline": started_at + run_timeout,
+                    "lease_until": min(started_at + 20, deadline)
+                    if deadline is not None
+                    else started_at + 20,
+                    "deadline": deadline,
                 }
                 result = connection.execute(
                     update(t.runs)
@@ -284,10 +293,11 @@ class Worker:
             or current["fence"] != run["fence"]
             or current["status"] not in ("running", "cancelling")
             or current["lease_until"] is None
-            or current["deadline"] is None
         ):
             raise PlatformError(409, "lease_lost", "运行执行权已失效。")
-        deadline_elapsed = current["deadline"] <= checked_at
+        deadline_elapsed = (
+            current["deadline"] is not None and current["deadline"] <= checked_at
+        )
         if check_deadline and deadline_elapsed:
             raise TimeoutError("运行执行期限已到。")
         if current["lease_until"] <= checked_at and not (
@@ -333,7 +343,6 @@ class Worker:
             or current["status"] not in ("running", "cancelling")
             or current["lease_until"] is None
             or current["lease_until"] <= time.time()
-            or current["deadline"] is None
         )
 
     def renew(self, run: dict) -> None:
@@ -342,7 +351,11 @@ class Worker:
             connection.execute(
                 update(t.runs)
                 .where(t.runs.c.id == run["id"])
-                .values(lease_until=min(time.time() + 20, current["deadline"]))
+                .values(
+                    lease_until=min(time.time() + 20, current["deadline"])
+                    if current["deadline"] is not None
+                    else time.time() + 20
+                )
             )
 
     async def heartbeat(self, run: dict) -> None:
@@ -873,7 +886,11 @@ class Worker:
             current = self._assert_lease(connection, run, check_deadline=False)
             if current["cancel_requested"] and status == "succeeded":
                 status = "cancelled"
-            if status == "succeeded" and current["deadline"] <= time.time():
+            if (
+                status == "succeeded"
+                and current["deadline"] is not None
+                and current["deadline"] <= time.time()
+            ):
                 status, error = "expired", "运行超时，已产生的用量仍会结算。"
             connection.execute(
                 update(t.runs)
@@ -942,7 +959,11 @@ class Worker:
 
             # Claim freezes the execution budget. A delayed executor or a
             # settings change must never grant this run another full timeout.
-            async with asyncio.timeout(max(0, run["deadline"] - time.time())):
+            async with asyncio.timeout(
+                max(0, run["deadline"] - time.time())
+                if run["deadline"] is not None
+                else None
+            ):
                 result = await execute_agent(
                     run["spec"], messages, invoke, emit, cancelled
                 )
