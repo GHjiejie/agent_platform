@@ -1,0 +1,9 @@
+# Existing OrbStack SQLite deployment only; every role remains single replica.
+# Do not use this profile for multi-node or production PostgreSQL deployments.
+database:
+  url: sqlite:////app/agent_platform/.data/platform.db
+sqliteStorage:
+  enabled: true
+  existingClaim: platform-data
+nodeSelector:
+  kubernetes.io/hostname: orbstack

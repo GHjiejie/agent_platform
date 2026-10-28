@@ -1,0 +1,3 @@
+Redis endpoint: {{ include "redis.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+Persistence uses append-only mode and noeviction. PVCs are retained after scale-down or uninstall.
+When auth.existingSecret is set, supply matching authenticated Redis URLs to each client release.

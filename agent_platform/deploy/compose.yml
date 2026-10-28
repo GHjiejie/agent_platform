@@ -1,0 +1,192 @@
+name: agent-platform
+
+x-platform: &platform
+  image: agent-platform:0.2.0
+  build:
+    context: ../..
+    dockerfile: agent_platform/deploy/Dockerfile
+  restart: unless-stopped
+  environment: &platform-environment
+    PLATFORM_MODE: saas
+    # Use URL-safe passwords, or set complete percent-encoded URLs explicitly.
+    PLATFORM_REDIS_URL: redis://redis:6379/0
+    PLATFORM_LITELLM_URL: http://litellm:4000/v1
+    PLATFORM_LITELLM_ADMIN_URL: ${PLATFORM_LITELLM_ADMIN_URL:-http://127.0.0.1:${LITELLM_HTTP_PORT:-4000}/ui}
+    PLATFORM_SECRET_ENCRYPTION_KEY: ${PLATFORM_SECRET_ENCRYPTION_KEY:?Set a persistent Fernet key}
+    PLATFORM_OPERATOR_EMAILS: ${PLATFORM_OPERATOR_EMAILS:-}
+    PLATFORM_EMBEDDED_WORKER: "false"
+    PLATFORM_SECURE_COOKIES: "true"
+    PLATFORM_WORKER_CONCURRENCY: ${PLATFORM_WORKER_CONCURRENCY:-4}
+    PLATFORM_QUEUE_TIMEOUT: ${PLATFORM_QUEUE_TIMEOUT:-300}
+    PLATFORM_RUN_TIMEOUT: ${PLATFORM_RUN_TIMEOUT:-300}
+    PLATFORM_MODEL_TIMEOUT: ${PLATFORM_MODEL_TIMEOUT:-90}
+    PLATFORM_MAX_RUN_COST: ${PLATFORM_MAX_RUN_COST:-1}
+    PLATFORM_EXPORT_DIRECTORY: /app/agent_platform/.data/exports
+    PLATFORM_TOMBSTONE_PATH: /app/agent_platform/.tombstones/tenant-tombstones.jsonl
+    PLATFORM_MAINTENANCE_INTERVAL: ${PLATFORM_MAINTENANCE_INTERVAL:-30}
+    PLATFORM_EXPORT_TTL_SECONDS: ${PLATFORM_EXPORT_TTL_SECONDS:-86400}
+    PLATFORM_DELETION_RETENTION_DAYS: ${PLATFORM_DELETION_RETENTION_DAYS:-30}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      PLATFORM_API_DB_PASSWORD: ${PLATFORM_API_DB_PASSWORD:?Set PLATFORM_API_DB_PASSWORD}
+      PLATFORM_WORKER_DB_PASSWORD: ${PLATFORM_WORKER_DB_PASSWORD:?Set PLATFORM_WORKER_DB_PASSWORD}
+      PLATFORM_GATEWAY_SYNC_DB_PASSWORD: ${PLATFORM_GATEWAY_SYNC_DB_PASSWORD:?Set PLATFORM_GATEWAY_SYNC_DB_PASSWORD}
+      PLATFORM_MAINTENANCE_DB_PASSWORD: ${PLATFORM_MAINTENANCE_DB_PASSWORD:?Set PLATFORM_MAINTENANCE_DB_PASSWORD}
+      PLATFORM_MIGRATION_DB_PASSWORD: ${PLATFORM_MIGRATION_DB_PASSWORD:?Set PLATFORM_MIGRATION_DB_PASSWORD separately}
+      LITELLM_DB_PASSWORD: ${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./bootstrap-roles.sh:/docker-entrypoint-initdb.d/10-platform.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    # Host API/Worker processes need the same commit notification channel.
+    # Port 0 lets Docker choose an available port; never bind beyond loopback.
+    ports:
+      - "127.0.0.1:${PLATFORM_LOCAL_REDIS_PORT:-0}:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  litellm:
+    image: ghcr.io/berriai/litellm:v1.83.0-nightly@sha256:3a8f981557838dea1340d318ba22225bfc2f2e86e4b415d6b1bc9cbe8dd26b72
+    restart: unless-stopped
+    command: ["--config", "/app/platform-config.yaml", "--port", "4000", "--host", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:${LITELLM_HTTP_PORT:-4000}:4000"
+    environment:
+      DATABASE_URL: postgresql://litellm:${LITELLM_DB_PASSWORD:?Set LITELLM_DB_PASSWORD}@postgres:5432/litellm
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?Set LITELLM_SALT_KEY}
+      UI_USERNAME: ${UI_USERNAME:-admin}
+      UI_PASSWORD: ${UI_PASSWORD:?Set UI_PASSWORD independently of gateway keys}
+      UPSTREAM_MODEL: ${UPSTREAM_MODEL:-openai/gpt-4o-mini}
+      UPSTREAM_API_BASE: ${UPSTREAM_API_BASE:-https://api.openai.com/v1}
+      UPSTREAM_API_KEY: ${UPSTREAM_API_KEY:-}
+      LITELLM_MODEL_ALIAS: ${LITELLM_MODEL_ALIAS:-platform-chat}
+      GATEWAY_KEY_MODELS: ${GATEWAY_KEY_MODELS:-${LITELLM_MODEL_ALIAS:-platform-chat}}
+      GATEWAY_KEY_MAX_BUDGET: ${GATEWAY_KEY_MAX_BUDGET:-100}
+      GATEWAY_KEY_RPM: ${GATEWAY_KEY_RPM:-60}
+      GATEWAY_KEY_TPM: ${GATEWAY_KEY_TPM:-120000}
+      GATEWAY_KEY_CONCURRENT: ${GATEWAY_KEY_CONCURRENT:-4}
+      STORE_MODEL_IN_DB: "true"
+      LITELLM_LOG: ERROR
+    volumes:
+      - ./litellm.yaml:/app/platform-config.yaml:ro
+      - ./bootstrap_gateway_key.py:/app/platform-bootstrap-key.py:ro
+      - ${GATEWAY_BOOTSTRAP_DIR:-../.data/gateway-bootstrap}:/bootstrap
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4000/health/liveliness', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+
+  init:
+    <<: *platform
+    restart: "no"
+    environment:
+      <<: *platform-environment
+      PLATFORM_DATABASE_URL: ${PLATFORM_MIGRATION_DATABASE_URL:-postgresql+psycopg://platform_migrator:${PLATFORM_MIGRATION_DB_PASSWORD:?Set PLATFORM_MIGRATION_DB_PASSWORD}@postgres:5432/platform}
+      PLATFORM_ADMIN_EMAIL: ${PLATFORM_ADMIN_EMAIL:-admin@example.com}
+      PLATFORM_ADMIN_PASSWORD: ${PLATFORM_ADMIN_PASSWORD:?Set PLATFORM_ADMIN_PASSWORD}
+    command: ["sh", "-c", "alembic -c agent_platform/alembic.ini upgrade head && python -m agent_platform init"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *platform
+    environment:
+      <<: *platform-environment
+      PLATFORM_DATABASE_URL: ${PLATFORM_API_DATABASE_URL:-postgresql+psycopg://platform_api:${PLATFORM_API_DB_PASSWORD:?Set PLATFORM_API_DB_PASSWORD}@postgres:5432/platform}
+    volumes:
+      - platform-artifacts:/app/agent_platform/.data:ro
+    ports:
+      - "127.0.0.1:${PLATFORM_HTTP_PORT:-8000}:8000"
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ready', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
+
+  worker:
+    <<: *platform
+    environment:
+      <<: *platform-environment
+      PLATFORM_DATABASE_URL: ${PLATFORM_WORKER_DATABASE_URL:-postgresql+psycopg://platform_worker:${PLATFORM_WORKER_DB_PASSWORD:?Set PLATFORM_WORKER_DB_PASSWORD}@postgres:5432/platform}
+    command: ["python", "-m", "agent_platform", "worker"]
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      litellm:
+        condition: service_healthy
+
+  gateway-sync:
+    <<: *platform
+    command: ["python", "-m", "agent_platform", "gateway-sync"]
+    environment:
+      <<: *platform-environment
+      PLATFORM_DATABASE_URL: ${PLATFORM_GATEWAY_SYNC_DATABASE_URL:-postgresql+psycopg://platform_gateway_sync:${PLATFORM_GATEWAY_SYNC_DB_PASSWORD:?Set PLATFORM_GATEWAY_SYNC_DB_PASSWORD}@postgres:5432/platform}
+      PLATFORM_GATEWAY_CONTROL_URL: http://litellm:4000
+      PLATFORM_GATEWAY_CONTROL_KEY: ${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY}
+      PLATFORM_GATEWAY_SYNC_INTERVAL: ${PLATFORM_GATEWAY_SYNC_INTERVAL:-2}
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      litellm:
+        condition: service_healthy
+
+  maintenance:
+    <<: *platform
+    environment:
+      <<: *platform-environment
+      PLATFORM_DATABASE_URL: ${PLATFORM_MAINTENANCE_DATABASE_URL:-postgresql+psycopg://platform_maintenance:${PLATFORM_MAINTENANCE_DB_PASSWORD:?Set PLATFORM_MAINTENANCE_DB_PASSWORD}@postgres:5432/platform}
+    command: ["python", "-m", "agent_platform", "maintenance"]
+    volumes:
+      - platform-artifacts:/app/agent_platform/.data
+      # Only maintenance writes deletion evidence, independently of DB backups.
+      - tenant-tombstones:/app/agent_platform/.tombstones
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  platform-artifacts:
+  tenant-tombstones:
+    # Pre-create this external volume; compose down -v cannot destroy it.
+    external: true
+    name: ${PLATFORM_TOMBSTONE_VOLUME:-agent-platform-tenant-tombstones}

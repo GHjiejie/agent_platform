@@ -1,0 +1,7 @@
+service:
+  type: LoadBalancer
+strategy:
+  type: Recreate
+  rollingUpdate: null
+nodeSelector:
+  kubernetes.io/hostname: orbstack

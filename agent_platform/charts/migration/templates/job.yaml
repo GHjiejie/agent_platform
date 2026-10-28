@@ -1,0 +1,76 @@
+{{- include "platform.validate" . -}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s" (include "platform.fullname" .) .Values.job.version | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.job.activeDeadlineSeconds }}
+  {{- if ne .Values.job.ttlSecondsAfterFinished nil }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.labels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: platform
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          command: [alembic, -c, agent_platform/alembic.ini, upgrade, head]
+          env:
+            - name: PLATFORM_DATABASE_URL
+              {{- if .Values.database.url }}
+              value: {{ .Values.database.url | quote }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+              {{- end }}
+          {{- if .Values.sqliteStorage.enabled }}
+          volumeMounts:
+            {{- if .Values.sqliteStorage.enabled }}
+            - name: sqlite
+              mountPath: {{ .Values.sqliteStorage.mountPath }}
+            {{- end }}
+          {{- end }}
+      {{- if .Values.sqliteStorage.enabled }}
+      volumes:
+        {{- if .Values.sqliteStorage.enabled }}
+        - name: sqlite
+          persistentVolumeClaim:
+            claimName: {{ .Values.sqliteStorage.existingClaim }}
+        {{- end }}
+      {{- end }}

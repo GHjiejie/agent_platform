@@ -1,0 +1,33 @@
+fullnameOverride: litellm
+replicaCount: 1
+image:
+  repository: ghcr.io/berriai/litellm
+  tag: v1.83.0-nightly
+  digest: sha256:3a8f981557838dea1340d318ba22225bfc2f2e86e4b415d6b1bc9cbe8dd26b72
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+# Contains DATABASE_URL, LITELLM_MASTER_KEY, LITELLM_SALT_KEY,
+# UI_USERNAME, UI_PASSWORD, LITELLM_MODEL_ALIAS and UPSTREAM_*.
+credentials:
+  existingSecret: litellm-secret
+redis:
+  host: redis
+  port: 6379
+  database: 1
+  auth:
+    existingSecret: ""
+    passwordKey: REDIS_PASSWORD
+service:
+  type: ClusterIP
+  port: 4000
+  annotations: {}
+strategy:
+  type: RollingUpdate
+  rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+resources:
+  requests: {cpu: 250m, memory: 512Mi}
+  limits: {cpu: "2", memory: 2Gi}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+terminationGracePeriodSeconds: 120

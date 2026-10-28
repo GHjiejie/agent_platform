@@ -1,0 +1,25 @@
+{
+  "baseline": {
+    "select_statements": 1542,
+    "event_replay_queries": 128,
+    "frames_sent": 24,
+    "seconds": 4.0,
+    "clients": 8,
+    "mode": "previous_polling",
+    "scope": "isolated SQLite, API stream_response and real identity reads"
+  },
+  "current": {
+    "select_statements": 720,
+    "event_replay_queries": 37,
+    "frames_sent": 24,
+    "seconds": 4.001,
+    "clients": 8,
+    "mode": "notifications",
+    "scope": "isolated SQLite, API stream_response and real identity reads"
+  },
+  "replay_query_reduction_percent": 71.09,
+  "select_reduction_percent": 53.31,
+  "redis": "isolated acceptance Redis",
+  "delta_interval_seconds": 1.0,
+  "limitations": "Local synthetic comparison; no production throughput, PostgreSQL lock or network capacity claim."
+}

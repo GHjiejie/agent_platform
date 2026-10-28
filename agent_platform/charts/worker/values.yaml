@@ -1,0 +1,75 @@
+# Each chart deploys one service and references existing dependencies.
+# Supply credentials with Kubernetes Secrets; do not put them in values files.
+fullnameOverride: worker
+image:
+  repository: agent-platform-worker
+  tag: 0.3.0-helm
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+podAnnotations: {}
+nodeSelector: {}
+affinity: {}
+tolerations: []
+podSecurityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "2"
+    memory: 768Mi
+# The default database is an external PostgreSQL runtime connection.
+# A plaintext URL is accepted only for SQLite local compatibility.
+database:
+  existingSecret: platform-worker-database-secret
+  urlKey: PLATFORM_DATABASE_URL
+  url: ""
+# SQLite cannot run across nodes. Local values pin its existing RWO volume.
+sqliteStorage:
+  enabled: false
+  existingClaim: platform-data
+  mountPath: /app/agent_platform/.data
+replicaCount: 1
+strategy:
+  type: RollingUpdate
+# Must be at least config.runTimeout + 30; templates reject a shorter grace.
+terminationGracePeriodSeconds: 360
+config:
+  mode: saas
+  redisUrl: redis://redis:6379/0
+  litellmUrl: http://litellm:4000/v1
+  concurrency: 4
+  runTimeout: 300
+  modelTimeout: 90
+  maxRunCost: "1"
+# Only the encryption key is projected; the entire Secret is never imported.
+runtimeSecret:
+  existingSecret: platform-runtime-secret
+  encryptionKey: PLATFORM_SECRET_ENCRYPTION_KEY
+# Compatibility with the original single-tenant restricted LiteLLM key.
+# Enable only in the local profile. SaaS credentials are per-tenant DB records.
+legacyGateway:
+  enabled: false
+  existingSecret: platform-runtime-secret
+  key: PLATFORM_LITELLM_KEY
+probes:
+  startup:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 6

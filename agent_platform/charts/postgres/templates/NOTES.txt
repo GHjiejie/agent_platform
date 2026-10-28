@@ -1,0 +1,5 @@
+PostgreSQL endpoint: {{ include "postgres.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+Credentials: existing Secret {{ .Values.credentials.existingSecret }}.
+The chart seeds only the optional LiteLLM role/database on first initialization.
+Provision platform runtime/migrator roles separately; this chart does not migrate platform data.
+StatefulSet PVCs are retained after scale-down or uninstall. Resizing requires a separate storage operation.

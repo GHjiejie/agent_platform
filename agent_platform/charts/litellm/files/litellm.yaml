@@ -1,0 +1,36 @@
+model_list:
+  - model_name: os.environ/LITELLM_MODEL_ALIAS
+    litellm_params:
+      model: os.environ/UPSTREAM_MODEL
+      api_base: os.environ/UPSTREAM_API_BASE
+      api_key: os.environ/UPSTREAM_API_KEY
+      temperature: 1
+      max_retries: 0
+      timeout: 90
+
+router_settings:
+  num_retries: 0
+  max_fallbacks: 0
+  fallbacks: []
+  context_window_fallbacks: []
+  content_policy_fallbacks: []
+  redis_host: {{ .Values.redis.host | quote }}
+  redis_port: {{ .Values.redis.port }}
+  redis_db: {{ .Values.redis.database }}
+{{- if .Values.redis.auth.existingSecret }}
+  redis_password: os.environ/REDIS_PASSWORD
+{{- end }}
+
+litellm_settings:
+  force_ipv4: true
+  num_retries: 0
+  request_timeout: 90
+  set_verbose: false
+  turn_off_message_logging: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  database_url: os.environ/DATABASE_URL
+  # UI additions are persisted; the default YAML deployment remains the seed.
+  store_model_in_db: true
+  ui_access_mode: admin_only

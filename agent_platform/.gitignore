@@ -1,0 +1,9 @@
+.data/
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+__pycache__/
+*.log
+*.db*

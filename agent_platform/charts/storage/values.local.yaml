@@ -1,0 +1,9 @@
+# Preserve the existing SQLite volume and exports beneath it; no data copy occurs.
+sqlite:
+  enabled: true
+  storageClass: local-path
+exports:
+  enabled: false
+tombstones:
+  storageClass: local-path
+  accessModes: [ReadWriteOnce]

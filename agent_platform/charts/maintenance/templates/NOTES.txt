@@ -1,0 +1,12 @@
+Agent Platform maintenance is installed as an independent release.
+
+This chart deploys only maintenance; it does not create the database, Redis, LiteLLM,
+existing Secrets or shared storage. Runtime PostgreSQL connections require a
+non-owner NOBYPASSRLS role; run the migration chart with a separate owner first.
+Use an image containing this chart's service probe implementation.
+API and maintenance need the same private export directory. With the default
+PostgreSQL profile, supply the existing platform-exports claim with access modes
+and scheduling appropriate to both services. Local SQLite values reuse the
+existing platform-data claim and pin all roles to the OrbStack node.
+The existing tenant-tombstones claim must be retained independently of database
+backup/restore. This chart never deletes or provisions the claim.

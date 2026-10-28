@@ -1,0 +1,6 @@
+persistence:
+  size: 1Gi
+  storageClass: local-path
+  accessModes: [ReadWriteOnce]
+nodeSelector:
+  kubernetes.io/hostname: orbstack

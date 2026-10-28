@@ -1,0 +1,68 @@
+# Each chart deploys one service and references existing dependencies.
+# Supply credentials with Kubernetes Secrets; do not put them in values files.
+fullnameOverride: gateway-sync
+image:
+  repository: agent-platform-gateway-sync
+  tag: 0.3.0-helm
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+podAnnotations: {}
+nodeSelector: {}
+affinity: {}
+tolerations: []
+podSecurityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "2"
+    memory: 768Mi
+# The default database is an external PostgreSQL runtime connection.
+# A plaintext URL is accepted only for SQLite local compatibility.
+database:
+  existingSecret: platform-gateway-sync-database-secret
+  urlKey: PLATFORM_DATABASE_URL
+  url: ""
+# SQLite cannot run across nodes. Local values pin its existing RWO volume.
+sqliteStorage:
+  enabled: false
+  existingClaim: platform-data
+  mountPath: /app/agent_platform/.data
+replicaCount: 1
+strategy:
+  type: RollingUpdate
+terminationGracePeriodSeconds: 360
+config:
+  mode: saas
+  syncInterval: 2
+  controlUrl: http://litellm:4000
+# Only this provisioner receives the gateway control credential.
+controlSecret:
+  existingSecret: gateway-control-secret
+  key: PLATFORM_GATEWAY_CONTROL_KEY
+# Only the encryption key is projected; the entire Secret is never imported.
+runtimeSecret:
+  existingSecret: platform-runtime-secret
+  encryptionKey: PLATFORM_SECRET_ENCRYPTION_KEY
+probes:
+  startup:
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 60
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  liveness:
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 6

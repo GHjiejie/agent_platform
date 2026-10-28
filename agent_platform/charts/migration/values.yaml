@@ -1,0 +1,46 @@
+# Each chart deploys one service and references existing dependencies.
+# Supply credentials with Kubernetes Secrets; do not put them in values files.
+fullnameOverride: migration
+image:
+  repository: agent-platform-migration
+  tag: 0.3.0-helm
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+podAnnotations: {}
+nodeSelector: {}
+affinity: {}
+tolerations: []
+podSecurityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+  runAsNonRoot: true
+  fsGroup: 10001
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "2"
+    memory: 768Mi
+# The default database is an external PostgreSQL runtime connection.
+# A plaintext URL is accepted only for SQLite local compatibility.
+database:
+  existingSecret: platform-migrator-secret
+  urlKey: PLATFORM_DATABASE_URL
+  url: ""
+# SQLite cannot run across nodes. Local values pin its existing RWO volume.
+sqliteStorage:
+  enabled: false
+  existingClaim: platform-data
+  mountPath: /app/agent_platform/.data
+# Run this release explicitly before deploying application versions that need it.
+# Change job.version for the next migration. It is never a deployment hook.
+job:
+  version: manual-1
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: null

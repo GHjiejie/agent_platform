@@ -1,0 +1,34 @@
+# Credentials are provisioned separately; this chart never renders a Secret.
+fullnameOverride: postgres
+replicaCount: 1
+image:
+  repository: postgres
+  tag: 17-alpine
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+credentials:
+  existingSecret: postgres-secret
+  adminPasswordKey: POSTGRES_PASSWORD
+  litellmPasswordKey: LITELLM_DB_PASSWORD
+admin:
+  user: postgres
+  database: postgres
+bootstrap:
+  litellm:
+    enabled: true
+    user: litellm
+    database: litellm
+# Init scripts run only against an empty PGDATA. Changes do not mutate existing DBs.
+persistence:
+  size: 5Gi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+service:
+  port: 5432
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {cpu: "2", memory: 1Gi}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+terminationGracePeriodSeconds: 60

@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "fullnameOverride": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+      "maxLength": 63
+    },
+    "sqlite": {
+      "type": "object",
+      "required": [
+        "size",
+        "storageClass",
+        "accessModes",
+        "enabled",
+        "name"
+      ],
+      "properties": {
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+([.][0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$"
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "accessModes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "ReadWriteOnce",
+              "ReadWriteMany",
+              "ReadOnlyMany",
+              "ReadWriteOncePod"
+            ]
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        }
+      },
+      "additionalProperties": false
+    },
+    "exports": {
+      "type": "object",
+      "required": [
+        "size",
+        "storageClass",
+        "accessModes",
+        "enabled",
+        "name"
+      ],
+      "properties": {
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+([.][0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$"
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "accessModes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "ReadWriteOnce",
+              "ReadWriteMany",
+              "ReadOnlyMany",
+              "ReadWriteOncePod"
+            ]
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        }
+      },
+      "additionalProperties": false
+    },
+    "tombstones": {
+      "type": "object",
+      "required": [
+        "size",
+        "storageClass",
+        "accessModes",
+        "enabled",
+        "name"
+      ],
+      "properties": {
+        "size": {
+          "type": "string",
+          "pattern": "^[0-9]+([.][0-9]+)?(Ki|Mi|Gi|Ti|Pi|Ei|K|M|G|T|P|E)?$"
+        },
+        "storageClass": {
+          "type": "string"
+        },
+        "accessModes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "ReadWriteOnce",
+              "ReadWriteMany",
+              "ReadOnlyMany",
+              "ReadWriteOncePod"
+            ]
+          }
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "maxLength": 63
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "fullnameOverride",
+    "sqlite",
+    "exports",
+    "tombstones"
+  ],
+  "additionalProperties": false
+}

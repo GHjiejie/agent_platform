@@ -1,0 +1,6 @@
+Agent Platform worker is installed as an independent release.
+
+This chart deploys only worker; it does not create the database, Redis, LiteLLM,
+existing Secrets or shared storage. Runtime PostgreSQL connections require a
+non-owner NOBYPASSRLS role; run the migration chart with a separate owner first.
+Use an image containing this chart's service probe implementation.

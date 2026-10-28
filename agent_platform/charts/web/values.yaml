@@ -1,0 +1,23 @@
+fullnameOverride: web
+replicaCount: 1
+image:
+  repository: agent-platform-web
+  tag: 0.3.0-helm
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+podAnnotations: {}
+nodeSelector: {}
+affinity: {}
+tolerations: []
+resources:
+  requests: {cpu: 25m, memory: 32Mi}
+  limits: {cpu: "1", memory: 128Mi}
+service:
+  type: ClusterIP
+  port: 80
+  annotations: {}
+# Only a network dependency: web has no DB, Redis, model credential or PVC.
+config:
+  apiUpstream: http://api:8000
+  streamTimeoutSeconds: 3600
+  maxBodySize: 10m

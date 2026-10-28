@@ -1,0 +1,7 @@
+# Existing OrbStack StatefulSet claim template must retain these immutable values.
+persistence:
+  size: 5Gi
+  storageClass: local-path
+  accessModes: [ReadWriteOnce]
+nodeSelector:
+  kubernetes.io/hostname: orbstack

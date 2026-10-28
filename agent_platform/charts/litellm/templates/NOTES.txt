@@ -1,0 +1,4 @@
+LiteLLM endpoint: http://{{ include "litellm.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}/v1
+The existing Secret {{ .Values.credentials.existingSecret }} supplies model, gateway and DB credentials.
+Redis and PostgreSQL are independent releases or external services. This chart does not deploy them.
+Config references upstream environment variables; changing the usable model requires no Agent changes.

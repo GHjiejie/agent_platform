@@ -1,0 +1,22 @@
+{{- range $key := list "sqlite" "exports" "tombstones" }}
+{{- $claim := index $.Values $key }}
+{{- if $claim.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ $claim.name }}
+  labels:
+    {{- include "storage.labels" $ | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes: {{ toYaml $claim.accessModes | nindent 4 }}
+  {{- if $claim.storageClass }}
+  storageClassName: {{ $claim.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $claim.size }}
+{{- end }}
+{{- end }}

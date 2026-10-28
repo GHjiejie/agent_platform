@@ -1,0 +1,24 @@
+fullnameOverride: redis
+replicaCount: 1
+image:
+  repository: redis
+  tag: 7.4-alpine
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+persistence:
+  size: 1Gi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+service:
+  port: 6379
+# Optional existing Secret; configure client URLs separately when enabling auth.
+auth:
+  existingSecret: ""
+  passwordKey: REDIS_PASSWORD
+resources:
+  requests: {cpu: 50m, memory: 64Mi}
+  limits: {cpu: "1", memory: 512Mi}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+terminationGracePeriodSeconds: 60

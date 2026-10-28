@@ -1,0 +1,107 @@
+{{- include "platform.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "platform.fullname" . }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: platform
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          command: [python, -m, agent_platform, gateway-sync]
+          envFrom:
+            - configMapRef:
+                name: {{ include "platform.fullname" . }}-config
+          env:
+            - name: PLATFORM_SERVICE_INSTANCE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: PLATFORM_DATABASE_URL
+              {{- if .Values.database.url }}
+              value: {{ .Values.database.url | quote }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+              {{- end }}
+            - name: PLATFORM_SECRET_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.existingSecret }}
+                  key: {{ .Values.runtimeSecret.encryptionKey }}
+            - name: PLATFORM_GATEWAY_CONTROL_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.controlSecret.existingSecret }}
+                  key: {{ .Values.controlSecret.key }}
+          startupProbe:
+            exec:
+              command: [python, -m, agent_platform.scripts.service_probe, gateway-sync]
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          readinessProbe:
+            exec:
+              command: [python, -m, agent_platform.scripts.service_probe, gateway-sync]
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          livenessProbe:
+            exec:
+              command: [python, -m, agent_platform.scripts.service_probe, gateway-sync]
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          {{- if .Values.sqliteStorage.enabled }}
+          volumeMounts:
+            {{- if .Values.sqliteStorage.enabled }}
+            - name: sqlite
+              mountPath: {{ .Values.sqliteStorage.mountPath }}
+            {{- end }}
+          {{- end }}
+      {{- if .Values.sqliteStorage.enabled }}
+      volumes:
+        {{- if .Values.sqliteStorage.enabled }}
+        - name: sqlite
+          persistentVolumeClaim:
+            claimName: {{ .Values.sqliteStorage.existingClaim }}
+        {{- end }}
+      {{- end }}

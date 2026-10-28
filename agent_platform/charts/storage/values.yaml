@@ -1,0 +1,22 @@
+# Storage is an independent release; applications reference claims by name.
+# Helm uninstall retains managed PVCs. Delete data only through an explicit operation.
+fullnameOverride: storage
+sqlite:
+  enabled: false
+  name: platform-data
+  size: 5Gi
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+exports:
+  enabled: true
+  name: platform-exports
+  size: 5Gi
+  storageClass: ""
+  # Use shared storage for API download and maintenance export replicas.
+  accessModes: [ReadWriteMany]
+tombstones:
+  enabled: true
+  name: tenant-tombstones
+  size: 1Gi
+  storageClass: ""
+  accessModes: [ReadWriteMany]

@@ -1,0 +1,4 @@
+Managed PVCs carry helm.sh/resource-policy=keep and survive Helm uninstall.
+Configure a provisioner that supports each access mode before installation.
+The local override keeps the existing platform-data SQLite/exports claim and tenant-tombstones claim.
+After uninstall, retained claims require explicit adoption before reinstalling this release.

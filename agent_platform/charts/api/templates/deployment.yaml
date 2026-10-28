@@ -1,0 +1,121 @@
+{{- include "platform.validate" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "platform.fullname" . }}
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      {{- include "platform.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "platform.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: platform
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          command: [python, -m, agent_platform, serve, --host, 0.0.0.0, --port, "8000"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: {{ include "platform.fullname" . }}-config
+          env:
+            - name: PLATFORM_DATABASE_URL
+              {{- if .Values.database.url }}
+              value: {{ .Values.database.url | quote }}
+              {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.urlKey }}
+              {{- end }}
+            - name: PLATFORM_SECRET_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.runtimeSecret.existingSecret }}
+                  key: {{ .Values.runtimeSecret.encryptionKey }}
+            {{- if .Values.legacyGateway.enabled }}
+            - name: PLATFORM_LITELLM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.legacyGateway.existingSecret }}
+                  key: {{ .Values.legacyGateway.key }}
+            {{- end }}
+          startupProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            {{- toYaml .Values.probes.startup | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /api/v1/ready
+              port: http
+            {{- toYaml .Values.probes.readiness | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /api/v1/health
+              port: http
+            {{- toYaml .Values.probes.liveness | nindent 12 }}
+          {{- if or .Values.sqliteStorage.enabled .Values.exports.enabled }}
+          volumeMounts:
+            {{- if .Values.sqliteStorage.enabled }}
+            - name: sqlite
+              mountPath: {{ .Values.sqliteStorage.mountPath }}
+            {{- end }}
+            {{- if .Values.exports.enabled }}
+            - name: exports
+              mountPath: {{ .Values.exports.mountPath }}
+              readOnly: {{ .Values.exports.readOnly }}
+            {{- end }}
+          {{- end }}
+      {{- if or .Values.sqliteStorage.enabled .Values.exports.enabled }}
+      volumes:
+        {{- if .Values.sqliteStorage.enabled }}
+        - name: sqlite
+          persistentVolumeClaim:
+            claimName: {{ .Values.sqliteStorage.existingClaim }}
+        {{- end }}
+        {{- if .Values.exports.enabled }}
+        - name: exports
+          persistentVolumeClaim:
+            claimName: {{ .Values.exports.existingClaim }}
+        {{- end }}
+      {{- end }}

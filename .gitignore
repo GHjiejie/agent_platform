@@ -1,0 +1,56 @@
+# Environment variables and local virtual environments
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+
+# Python bytecode and tooling caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pytype/
+.hypothesis/
+
+# Local platform state and deletion records
+.data/
+.tombstones/
+node_modules/
+
+# Test and coverage output
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Packaging and build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+
+# Local IDE and OS files
+.DS_Store
+.idea/
+.vscode/
+
+# Runtime data produced by checkpoint_project
+checkpoint_project/data/
+checkpoint_project/workspace/
+checkpoint_project/frontend/node_modules/
+
+# Local databases and SQLite runtime files
+*.sqlite
+*.sqlite3
+*.db
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.db-shm
+*.db-wal
+*.db-journal

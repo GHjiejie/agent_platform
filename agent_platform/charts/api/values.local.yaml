@@ -1,0 +1,25 @@
+# Existing OrbStack SQLite deployment only; every role remains single replica.
+# Do not use this profile for multi-node or production PostgreSQL deployments.
+database:
+  url: sqlite:////app/agent_platform/.data/platform.db
+sqliteStorage:
+  enabled: true
+  existingClaim: platform-data
+nodeSelector:
+  kubernetes.io/hostname: orbstack
+replicaCount: 1
+strategy:
+  type: Recreate
+legacyGateway:
+  enabled: true
+# Already backed by platform-data: no second volume for the nested directory.
+exports:
+  enabled: false
+  mountPath: /app/agent_platform/.data/exports
+service:
+  type: ClusterIP
+  port: 8000
+config:
+  mode: local
+  secureCookies: false
+  litellmAdminUrl: http://127.0.0.1:4000/ui

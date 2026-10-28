@@ -1,0 +1,6 @@
+This independent release runs only Alembic schema migrations.
+
+It is not an application rollout hook and does not bootstrap users, issue gateway
+keys or consume runtime/upstream credentials. Use a separate migrator database
+Secret. Bump job.version explicitly for each new run; migration applies only to a
+quiescent schema compatible with the next application version.

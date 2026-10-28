@@ -1,0 +1,15 @@
+FROM node:24-alpine AS web-build
+WORKDIR /build
+COPY agent_platform/apps/web/package*.json ./
+RUN npm ci
+COPY agent_platform/apps/web/ ./
+RUN npm run build
+
+FROM nginx:1.28.1-alpine AS frontend
+RUN mkdir -p /etc/nginx/platform
+COPY --from=web-build /build/dist /usr/share/nginx/html
+COPY agent_platform/deploy/nginx.conf /etc/nginx/nginx.conf
+USER 101:101
+EXPOSE 8080
+ENTRYPOINT ["nginx"]
+CMD ["-g", "daemon off;"]

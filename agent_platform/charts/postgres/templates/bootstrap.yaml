@@ -1,0 +1,22 @@
+{{- if .Values.bootstrap.litellm.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "postgres.fullname" . }}-bootstrap
+  labels:
+    {{- include "postgres.labels" . | nindent 4 }}
+data:
+  init.sh: |
+    #!/bin/sh
+    set -eu
+    psql --username "${POSTGRES_USER:-postgres}" --dbname "${POSTGRES_DB:-postgres}" --set ON_ERROR_STOP=1 --set litellm_user={{ .Values.bootstrap.litellm.user | quote }} --set litellm_database={{ .Values.bootstrap.litellm.database | quote }} <<'SQL'
+    \getenv litellm_password LITELLM_DB_PASSWORD
+    SELECT format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS', :'litellm_user')
+    WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname=:'litellm_user') \gexec
+    SELECT format('ALTER ROLE %I PASSWORD %L', :'litellm_user', :'litellm_password') \gexec
+    SELECT format('CREATE DATABASE %I OWNER %I', :'litellm_database', :'litellm_user')
+    WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname=:'litellm_database') \gexec
+    SELECT format('REVOKE CONNECT ON DATABASE %I FROM PUBLIC', :'litellm_database') \gexec
+    SELECT format('GRANT CONNECT ON DATABASE %I TO %I', :'litellm_database', :'litellm_user') \gexec
+    SQL
+{{- end }}

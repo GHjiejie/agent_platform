@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "litellm.fullname" . }}
+  labels:
+    {{- include "litellm.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy: {{ toYaml .Values.strategy | nindent 4 }}
+  selector:
+    matchLabels:
+      app: platform-{{ include "litellm.fullname" . }}
+  template:
+    metadata:
+      labels:
+        app: platform-{{ include "litellm.fullname" . }}
+        {{- include "litellm.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{ toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: litellm
+          image: {{ printf "%s:%s%s" .Values.image.repository .Values.image.tag (ternary (printf "@%s" .Values.image.digest) "" (ne .Values.image.digest "")) | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: [--config, /app/platform-config.yaml, --port, "4000", --host, 0.0.0.0]
+          envFrom:
+            - secretRef:
+                name: {{ .Values.credentials.existingSecret }}
+          env:
+            - {name: STORE_MODEL_IN_DB, value: "true"}
+            - {name: LITELLM_LOG, value: ERROR}
+            {{- if .Values.redis.auth.existingSecret }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.redis.auth.existingSecret }}
+                  key: {{ .Values.redis.auth.passwordKey }}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: 4000}
+          resources: {{ toYaml .Values.resources | nindent 12 }}
+          startupProbe:
+            httpGet: {path: /health/liveliness, port: 4000}
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 60
+          readinessProbe:
+            httpGet: {path: /health/liveliness, port: 4000}
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: {path: /health/liveliness, port: 4000}
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 6
+          volumeMounts:
+            - {name: config, mountPath: /app/platform-config.yaml, subPath: litellm.yaml, readOnly: true}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "litellm.fullname" . }}-config

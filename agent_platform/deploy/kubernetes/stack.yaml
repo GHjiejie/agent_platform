@@ -1,0 +1,314 @@
+# Local OrbStack profile: SQLite uses one RWO volume and one replica per role.
+# Secrets and the LiteLLM ConfigMap are installed by scripts.kubernetes.
+# Historical one-time local import only. Daily service releases use charts/.
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Namespace
+    metadata:
+      name: agent-platform
+      labels:
+        app.kubernetes.io/part-of: agent-platform
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata: {name: platform-data, namespace: agent-platform}
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: local-path
+      resources: {requests: {storage: 5Gi}}
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata: {name: tenant-tombstones, namespace: agent-platform}
+    spec:
+      accessModes: [ReadWriteOnce]
+      storageClassName: local-path
+      resources: {requests: {storage: 1Gi}}
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata: {name: platform-config, namespace: agent-platform}
+    data:
+      PLATFORM_MODE: local
+      PLATFORM_DATABASE_URL: sqlite:////app/agent_platform/.data/platform.db
+      PLATFORM_REDIS_URL: redis://redis:6379/0
+      PLATFORM_LITELLM_URL: http://litellm:4000/v1
+      PLATFORM_LITELLM_ADMIN_URL: http://127.0.0.1:4000/ui
+      PLATFORM_EMBEDDED_WORKER: "false"
+      PLATFORM_SECURE_COOKIES: "false"
+      PLATFORM_WORKER_CONCURRENCY: "4"
+      PLATFORM_RUN_TIMEOUT: "300"
+      PLATFORM_MODEL_TIMEOUT: "90"
+      PLATFORM_MAX_RUN_COST: "1"
+      PLATFORM_EXPORT_DIRECTORY: /app/agent_platform/.data/exports
+      PLATFORM_TOMBSTONE_PATH: /app/agent_platform/.tombstones/tenant-tombstones.jsonl
+      PLATFORM_MAINTENANCE_INTERVAL: "30"
+      PLATFORM_EXPORT_TTL_SECONDS: "86400"
+      PLATFORM_DELETION_RETENTION_DAYS: "30"
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata: {name: postgres-bootstrap, namespace: agent-platform}
+    data:
+      init.sh: |
+        #!/bin/sh
+        set -eu
+        psql --username "${POSTGRES_USER:-postgres}" --dbname "${POSTGRES_DB:-postgres}" --set ON_ERROR_STOP=1 <<'SQL'
+        \getenv litellm_password LITELLM_DB_PASSWORD
+        SELECT 'CREATE ROLE litellm LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS'
+        WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='litellm') \gexec
+        SELECT format('ALTER ROLE litellm PASSWORD %L', :'litellm_password') \gexec
+        SELECT 'CREATE DATABASE litellm OWNER litellm'
+        WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='litellm') \gexec
+        REVOKE CONNECT ON DATABASE litellm FROM PUBLIC;
+        GRANT CONNECT ON DATABASE litellm TO litellm;
+        SQL
+  - apiVersion: v1
+    kind: Service
+    metadata: {name: postgres, namespace: agent-platform}
+    spec:
+      clusterIP: None
+      selector: {app: platform-postgres}
+      ports: [{name: postgres, port: 5432, targetPort: 5432}]
+  - apiVersion: apps/v1
+    kind: StatefulSet
+    metadata: {name: postgres, namespace: agent-platform}
+    spec:
+      serviceName: postgres
+      replicas: 1
+      persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}
+      selector: {matchLabels: {app: platform-postgres}}
+      template:
+        metadata: {labels: {app: platform-postgres}}
+        spec:
+          automountServiceAccountToken: false
+          terminationGracePeriodSeconds: 60
+          containers:
+            - name: postgres
+              image: postgres:17-alpine
+              imagePullPolicy: IfNotPresent
+              envFrom: [{secretRef: {name: postgres-secret}}]
+              env:
+                - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+              ports: [{containerPort: 5432}]
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: "2", memory: 1Gi}
+              readinessProbe:
+                exec: {command: [psql, -U, postgres, -d, litellm, -Atc, "SELECT 1"]}
+                periodSeconds: 5
+              startupProbe:
+                exec: {command: [pg_isready, -U, postgres]}
+                periodSeconds: 5
+                failureThreshold: 60
+              volumeMounts:
+                - {name: data, mountPath: /var/lib/postgresql/data}
+                - {name: bootstrap, mountPath: /docker-entrypoint-initdb.d, readOnly: true}
+          volumes:
+            - name: bootstrap
+              configMap: {name: postgres-bootstrap, defaultMode: 493}
+      volumeClaimTemplates:
+        - metadata: {name: data}
+          spec:
+            accessModes: [ReadWriteOnce]
+            storageClassName: local-path
+            resources: {requests: {storage: 5Gi}}
+  - apiVersion: v1
+    kind: Service
+    metadata: {name: redis, namespace: agent-platform}
+    spec:
+      clusterIP: None
+      selector: {app: platform-redis}
+      ports: [{name: redis, port: 6379, targetPort: 6379}]
+  - apiVersion: apps/v1
+    kind: StatefulSet
+    metadata: {name: redis, namespace: agent-platform}
+    spec:
+      serviceName: redis
+      replicas: 1
+      persistentVolumeClaimRetentionPolicy: {whenDeleted: Retain, whenScaled: Retain}
+      selector: {matchLabels: {app: platform-redis}}
+      template:
+        metadata: {labels: {app: platform-redis}}
+        spec:
+          automountServiceAccountToken: false
+          terminationGracePeriodSeconds: 60
+          containers:
+            - name: redis
+              image: redis:7.4-alpine
+              imagePullPolicy: IfNotPresent
+              args: [redis-server, --appendonly, "yes", --maxmemory-policy, noeviction]
+              resources:
+                requests: {cpu: 50m, memory: 64Mi}
+                limits: {cpu: "1", memory: 512Mi}
+              readinessProbe:
+                exec: {command: [redis-cli, ping]}
+                periodSeconds: 5
+              livenessProbe:
+                exec: {command: [redis-cli, ping]}
+                periodSeconds: 15
+              volumeMounts: [{name: data, mountPath: /data}]
+      volumeClaimTemplates:
+        - metadata: {name: data}
+          spec:
+            accessModes: [ReadWriteOnce]
+            storageClassName: local-path
+            resources: {requests: {storage: 1Gi}}
+  - apiVersion: v1
+    kind: Service
+    metadata: {name: litellm, namespace: agent-platform}
+    spec:
+      type: LoadBalancer
+      selector: {app: platform-litellm}
+      ports: [{name: http, port: 4000, targetPort: 4000}]
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata: {name: litellm, namespace: agent-platform}
+    spec:
+      replicas: 1
+      strategy: {type: Recreate}
+      selector: {matchLabels: {app: platform-litellm}}
+      template:
+        metadata: {labels: {app: platform-litellm}}
+        spec:
+          automountServiceAccountToken: false
+          terminationGracePeriodSeconds: 120
+          containers:
+            - name: litellm
+              image: ghcr.io/berriai/litellm:v1.83.0-nightly@sha256:3a8f981557838dea1340d318ba22225bfc2f2e86e4b415d6b1bc9cbe8dd26b72
+              imagePullPolicy: IfNotPresent
+              args: [--config, /app/platform-config.yaml, --port, "4000", --host, 0.0.0.0]
+              envFrom: [{secretRef: {name: litellm-secret}}]
+              env:
+                - {name: STORE_MODEL_IN_DB, value: "true"}
+                - {name: LITELLM_LOG, value: ERROR}
+              ports: [{containerPort: 4000}]
+              resources:
+                requests: {cpu: 250m, memory: 512Mi}
+                limits: {cpu: "2", memory: 2Gi}
+              startupProbe:
+                httpGet: {path: /health/liveliness, port: 4000}
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 60
+              readinessProbe:
+                httpGet: {path: /health/liveliness, port: 4000}
+                periodSeconds: 10
+                timeoutSeconds: 3
+              livenessProbe:
+                httpGet: {path: /health/liveliness, port: 4000}
+                periodSeconds: 20
+                timeoutSeconds: 5
+                failureThreshold: 6
+              volumeMounts:
+                - {name: config, mountPath: /app/platform-config.yaml, subPath: litellm.yaml, readOnly: true}
+          volumes: [{name: config, configMap: {name: litellm-config}}]
+  - apiVersion: v1
+    kind: Service
+    metadata: {name: api, namespace: agent-platform}
+    spec:
+      type: LoadBalancer
+      selector: {app: platform-api}
+      ports: [{name: http, port: 8010, targetPort: 8000}]
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata: {name: api, namespace: agent-platform}
+    spec:
+      replicas: 1
+      strategy: {type: Recreate}
+      selector: {matchLabels: {app: platform-api}}
+      template:
+        metadata: {labels: {app: platform-api}}
+        spec: &runtimePod
+          automountServiceAccountToken: false
+          terminationGracePeriodSeconds: 360
+          securityContext: {runAsUser: 10001, runAsGroup: 10001, runAsNonRoot: true, fsGroup: 10001}
+          containers:
+            - &runtimeContainer
+              name: platform
+              image: agent-platform:0.2.0-k8s
+              imagePullPolicy: IfNotPresent
+              command: [python, -m, agent_platform, serve, --host, 0.0.0.0, --port, "8000"]
+              envFrom: &runtimeEnv
+                - {configMapRef: {name: platform-config}}
+                - {secretRef: {name: platform-runtime-secret}}
+              securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+              resources:
+                requests: {cpu: 100m, memory: 128Mi}
+                limits: {cpu: "2", memory: 768Mi}
+              startupProbe:
+                httpGet: {path: /api/v1/health, port: 8000}
+                periodSeconds: 5
+                failureThreshold: 60
+              readinessProbe:
+                httpGet: {path: /api/v1/ready, port: 8000}
+                periodSeconds: 5
+                timeoutSeconds: 3
+              volumeMounts:
+                - {name: data, mountPath: /app/agent_platform/.data}
+                - {name: tombstones, mountPath: /app/agent_platform/.tombstones}
+          volumes:
+            - {name: data, persistentVolumeClaim: {claimName: platform-data}}
+            - {name: tombstones, persistentVolumeClaim: {claimName: tenant-tombstones}}
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata: {name: worker, namespace: agent-platform}
+    spec:
+      replicas: 1
+      strategy: {type: Recreate}
+      selector: {matchLabels: {app: platform-worker}}
+      template:
+        metadata: {labels: {app: platform-worker}}
+        spec:
+          <<: *runtimePod
+          containers:
+            - <<: *runtimeContainer
+              command: [python, -m, agent_platform, worker]
+              startupProbe: null
+              env: [{name: PLATFORM_SERVICE_ROLE, value: worker}]
+              readinessProbe: &heartbeatProbe
+                exec:
+                  command:
+                    - python
+                    - -c
+                    - "import os,sqlite3,time; c=sqlite3.connect('file:/app/agent_platform/.data/platform.db?mode=ro',uri=True,timeout=2); assert c.execute('SELECT 1 FROM platform_service_heartbeats WHERE role=? AND expires_at>?',(os.environ['PLATFORM_SERVICE_ROLE'],time.time())).fetchone()"
+                initialDelaySeconds: 5
+                periodSeconds: 10
+                timeoutSeconds: 5
+                failureThreshold: 3
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata: {name: gateway-sync, namespace: agent-platform}
+    spec:
+      replicas: 1
+      strategy: {type: Recreate}
+      selector: {matchLabels: {app: platform-gateway-sync}}
+      template:
+        metadata: {labels: {app: platform-gateway-sync}}
+        spec:
+          <<: *runtimePod
+          containers:
+            - <<: *runtimeContainer
+              command: [python, -m, agent_platform, gateway-sync]
+              startupProbe: null
+              env: [{name: PLATFORM_SERVICE_ROLE, value: gateway-sync}]
+              readinessProbe: *heartbeatProbe
+              envFrom:
+                - {configMapRef: {name: platform-config}}
+                - {secretRef: {name: platform-runtime-secret}}
+                - {secretRef: {name: gateway-control-secret}}
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata: {name: maintenance, namespace: agent-platform}
+    spec:
+      replicas: 1
+      strategy: {type: Recreate}
+      selector: {matchLabels: {app: platform-maintenance}}
+      template:
+        metadata: {labels: {app: platform-maintenance}}
+        spec:
+          <<: *runtimePod
+          containers:
+            - <<: *runtimeContainer
+              command: [python, -m, agent_platform, maintenance]
+              startupProbe: null
+              env: [{name: PLATFORM_SERVICE_ROLE, value: maintenance}]
+              readinessProbe: *heartbeatProbe

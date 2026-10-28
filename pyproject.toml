@@ -1,0 +1,46 @@
+[project]
+name = "agent-platform"
+version = "0.1.0"
+description = "A multi-tenant agent platform built with FastAPI, React, LangGraph, and LiteLLM"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "cryptography>=44",
+    "alembic>=1.14,<2",
+    "argon2-cffi>=23,<26",
+    "deepagents>=0.7.11",
+    "dotenv>=0.9.9",
+    "fastapi>=0.116.0",
+    "grandalf>=0.8",
+    "langchain>=1.3.15",
+    "langchain-daytona>=0.0.8",
+    "langchain-openai>=1.5.0",
+    "langgraph>=1.2.11",
+    "langgraph-checkpoint-sqlite>=3.1.1",
+    "litellm[proxy]>=1.74.0,<2",
+    "openai>=3.0.0",
+    "psycopg[binary]>=3.2,<4",
+    "python-dotenv>=1.0.1,<2",
+    "pyyaml>=6.0.3,<7",
+    "redis>=5,<7",
+    "sqlalchemy>=2.0,<3",
+    "uvicorn[standard]>=0.35.0",
+    "ag-ui-protocol==1.0.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.3",
+]
+rag = [
+    "boto3>=1.40,<2",
+    "httpx>=0.28,<0.29",
+    "llama-index-core>=0.14,<0.15",
+    "llama-index-llms-langchain>=0.7,<0.8",
+    "pgvector>=0.4,<0.5",
+    "pydantic-settings>=2.10,<3",
+    "pyjwt[crypto]>=2.10,<3",
+    "pypdf>=6,<7",
+    "python-docx>=1.2,<2",
+    "python-multipart>=0.0.22",
+]

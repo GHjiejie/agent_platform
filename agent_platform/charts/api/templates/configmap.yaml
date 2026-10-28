@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platform.fullname" . }}-config
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+data:
+  PLATFORM_MODE: {{ .Values.config.mode | quote }}
+  PLATFORM_REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  PLATFORM_SECURE_COOKIES: {{ .Values.config.secureCookies | quote }}
+  PLATFORM_EMBEDDED_WORKER: "false"
+  PLATFORM_LITELLM_URL: {{ .Values.config.litellmUrl | quote }}
+  PLATFORM_LITELLM_ADMIN_URL: {{ .Values.config.litellmAdminUrl | quote }}
+  PLATFORM_MAX_RUN_COST: {{ .Values.config.maxRunCost | quote }}
+  PLATFORM_EXPORT_DIRECTORY: {{ .Values.exports.mountPath | quote }}

@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platform.fullname" . }}-config
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+data:
+  PLATFORM_MODE: {{ .Values.config.mode | quote }}
+  PLATFORM_REDIS_URL: {{ .Values.config.redisUrl | quote }}
+  PLATFORM_LITELLM_URL: {{ .Values.config.litellmUrl | quote }}
+  PLATFORM_WORKER_CONCURRENCY: {{ .Values.config.concurrency | quote }}
+  PLATFORM_RUN_TIMEOUT: {{ .Values.config.runTimeout | quote }}
+  PLATFORM_MODEL_TIMEOUT: {{ .Values.config.modelTimeout | quote }}
+  PLATFORM_MAX_RUN_COST: {{ .Values.config.maxRunCost | quote }}

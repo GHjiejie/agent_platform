@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "platform.fullname" . }}-config
+  labels:
+    {{- include "platform.labels" . | nindent 4 }}
+data:
+  PLATFORM_MODE: {{ .Values.config.mode | quote }}
+  PLATFORM_MAINTENANCE_INTERVAL: {{ .Values.config.interval | quote }}
+  PLATFORM_MAINTENANCE_BATCH_SIZE: {{ .Values.config.batchSize | quote }}
+  PLATFORM_EXPORT_TTL_SECONDS: {{ .Values.config.exportTtlSeconds | quote }}
+  PLATFORM_DELETION_RETENTION_DAYS: {{ .Values.config.deletionRetentionDays | quote }}
+  PLATFORM_EXPORT_DIRECTORY: {{ .Values.exports.mountPath | quote }}
+  PLATFORM_TOMBSTONE_PATH: {{ printf "%s/%s" .Values.tombstones.mountPath .Values.tombstones.filename | quote }}
