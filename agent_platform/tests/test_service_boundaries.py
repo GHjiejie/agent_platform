@@ -194,6 +194,8 @@ class WorkerShutdownTests(unittest.IsolatedAsyncioTestCase):
             worker_concurrency=1, worker_poll_seconds=0.01
         )
         worker.recover = Mock()
+        worker.member_queue = SimpleNamespace(claim=Mock(return_value=None))
+        worker.remote_health = SimpleNamespace(claim=Mock(return_value=None))
         worker.claim = Mock(return_value={"id": "offline-run"})
         started, finish = asyncio.Event(), asyncio.Event()
 

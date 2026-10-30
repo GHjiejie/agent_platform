@@ -120,6 +120,16 @@ class ComposeStoragePermissionsTests(unittest.TestCase):
         for role, grants in checkpoint.CHECKPOINT_PRIVILEGES.items():
             for table in checkpoint.CHECKPOINT_TABLES:
                 expected[role][table.name] = grants
+        task_lease = import_module(
+            "agent_platform.migrations.versions.0016_member_task_leases"
+        )
+        for role, grants in task_lease.LEASE_PRIVILEGES.items():
+            expected[role][task_lease.leases.name] = grants
+        remote = import_module(
+            "agent_platform.migrations.versions.0017_remote_agent_registry"
+        )
+        for role, grants in remote.REMOTE_PRIVILEGES.items():
+            expected[role].update(grants)
         self.assertEqual(expected, ROLE_PRIVILEGES)
 
 

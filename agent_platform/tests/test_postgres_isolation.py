@@ -295,7 +295,10 @@ class PostgreSQLIsolationTests(unittest.TestCase):
     def test_durable_team_journal_uses_worker_only_permissions_and_rls(self):
         self._team_with_service_roles(durable=True)
 
-    def _team_with_service_roles(self, *, durable):
+    def test_distributed_team_uses_independent_worker_leases_and_rls(self):
+        self._team_with_service_roles(durable=True, distributed=True)
+
+    def _team_with_service_roles(self, *, durable, distributed=False):
         from sqlalchemy import update
 
         from agent_platform.infrastructure import tenancy_tables as nt
@@ -311,6 +314,7 @@ class PostgreSQLIsolationTests(unittest.TestCase):
             self.platform.settings,
             collaboration_enabled=True,
             collaboration_durable_enabled=durable,
+            collaboration_distributed_enabled=distributed,
             litellm_url=control.url,
             gateway_control_url=control.url,
             gateway_control_key="temporary-acceptance-control-key",
@@ -380,7 +384,32 @@ class PostgreSQLIsolationTests(unittest.TestCase):
         worker = Worker(worker_services(worker_db, settings), gateway=gateway)
         claimed = worker.claim()
         self.assertEqual(claimed["id"], queued["id"])
-        asyncio.run(worker.execute(claimed))
+        if distributed:
+            member_db = self.sandbox.database(self.sandbox.runtime_urls["worker"])
+            member = Worker(worker_services(member_db, settings), gateway=gateway)
+
+            async def execute_distributed():
+                parent = asyncio.create_task(worker.execute(claimed))
+                async with asyncio.timeout(10):
+                    while not parent.done():
+                        child = await asyncio.to_thread(member.member_queue.claim)
+                        if child:
+                            await member.member_queue.execute(child)
+                        await asyncio.sleep(0.01)
+                await parent
+
+            asyncio.run(execute_distributed())
+            from agent_platform.infrastructure.task_lease_tables import leases
+
+            with member_db.tenant_scope(self.tenant_a), member_db.read() as connection:
+                children = connection.execute(select(leases)).mappings().all()
+                self.assertEqual(len(children), 3)
+                self.assertEqual({child["owner"] for child in children}, {member.owner})
+                self.assertNotEqual(member.owner, worker.owner)
+            with member_db.tenant_scope(self.tenant_b), member_db.read() as connection:
+                self.assertEqual(connection.execute(select(leases)).all(), [])
+        else:
+            asyncio.run(worker.execute(claimed))
         result = detail(platform, self.fixture.owner, queued["id"])
         self.assertEqual(result["status"], "succeeded", result)
         self.assertEqual(

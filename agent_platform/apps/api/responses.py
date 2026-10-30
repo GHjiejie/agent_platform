@@ -305,3 +305,51 @@ class DiscoveryCandidate(ResponseModel):
 class DiscoveryResponse(ResponseModel):
     items: list[DiscoveryCandidate]
     next_cursor: str | None
+
+
+class RemoteCredentialResponse(ResponseModel):
+    id: str
+    tenant_id: str
+    name: str
+    active: bool
+    created_at: str
+
+
+class RemoteCredentialList(ResponseModel):
+    items: list[RemoteCredentialResponse]
+    next_cursor: str | None
+
+
+class RemoteEndpointResponse(ResponseModel):
+    id: str
+    url: str
+    credential_id: str
+    health_status: str
+    health_until: float
+    health_error: str
+
+
+class RemoteRegistrationResponse(ResponseModel):
+    id: str
+    agent_id: str
+    version: int
+    descriptor: dict[str, Any]
+    digest: str
+    enabled: bool
+    created_at: str
+    endpoints: list[RemoteEndpointResponse]
+
+
+class RemoteRegistrationList(ResponseModel):
+    items: list[RemoteRegistrationResponse]
+    next_cursor: str | None
+
+
+class RemoteAvailabilityResponse(ResponseModel):
+    id: str
+    enabled: bool
+
+
+class RemoteProbeResponse(ResponseModel):
+    id: str
+    status: Literal["pending"]

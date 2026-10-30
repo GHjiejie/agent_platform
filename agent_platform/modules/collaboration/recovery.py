@@ -67,7 +67,7 @@ def settle_journal_usage(worker, tenant_id):
 def requeue_safe_run(worker, connection, run):
     features = run["spec"].get("team_snapshot", {}).get("features", {})
     if not (
-        run["spec"].get("snapshot_schema_version") == 4
+        run["spec"].get("snapshot_schema_version") in (4, 5)
         and features.get("durable")
         and features.get("recovery")
         and worker.settings.collaboration_recovery_enabled

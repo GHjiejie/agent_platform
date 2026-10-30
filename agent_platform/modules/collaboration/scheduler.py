@@ -5,7 +5,7 @@ import json
 import time
 from contextlib import suppress
 
-from sqlalchemy import and_, func, insert, select, update
+from sqlalchemy import insert, select, update
 
 from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import tables as t
@@ -299,27 +299,9 @@ class CollaborationScheduler:
             if task:
                 # Count and insertion use the tenant lock across workers. Stale
                 # root leases cannot retain capacity or confirm more outputs.
-                active = (
-                    select(func.count())
-                    .select_from(
-                        ct.executions.join(
-                            t.runs,
-                            and_(
-                                t.runs.c.tenant_id == ct.executions.c.tenant_id,
-                                t.runs.c.id == ct.executions.c.root_run_id,
-                                t.runs.c.fence == ct.executions.c.fence,
-                                t.runs.c.owner == ct.executions.c.owner,
-                            ),
-                        )
-                    )
-                    .where(
-                        ct.executions.c.tenant_id == self.run["tenant_id"],
-                        ct.executions.c.role == "member",
-                        ct.executions.c.status == "running",
-                        t.runs.c.status.in_(("running", "cancelling")),
-                        t.runs.c.lease_until > time.time(),
-                    )
-                )
+                from .task_leases import active_members
+
+                active = active_members(self.run["tenant_id"])
                 if (
                     connection.scalar(active)
                     >= self.worker.settings.collaboration_max_active_members
@@ -444,6 +426,7 @@ class CollaborationScheduler:
                     ct.executions.c.id == context.execution_id,
                     ct.executions.c.status == "running",
                     ct.executions.c.fence == context.fence,
+                    ct.executions.c.owner == context.owner,
                 )
                 .values(
                     status=state, output=output, error=error or "", finished_at=now()
@@ -569,9 +552,12 @@ class CollaborationScheduler:
         role="member",
         contract=None,
         result_validator=None,
+        admitted_context=None,
     ):
-        previous = await asyncio.to_thread(
-            self.previous_execution, task=task, role=role
+        previous = (
+            None
+            if admitted_context
+            else await asyncio.to_thread(self.previous_execution, task=task, role=role)
         )
         if previous:
             if previous["status"] == "succeeded":
@@ -581,7 +567,9 @@ class CollaborationScheduler:
                     409, "execution_already_terminal", "先前执行已终止，不能自动重做。"
                 )
             messages = previous["input"]
-        context = await self.admit(spec, messages, task=task, role=role)
+        context = admitted_context or await self.admit(
+            spec, messages, task=task, role=role
+        )
         journal = None
         if self.snapshot.get("features", {}).get("durable", False):
             from agent_platform.modules.runtime.journal import DurableJournal
@@ -679,6 +667,11 @@ class CollaborationScheduler:
     async def run_team(self, history):
         for mode, requested, enabled in (
             (
+                "distributed",
+                self.snapshot.get("features", {}).get("distributed", False),
+                self.worker.settings.collaboration_distributed_enabled,
+            ),
+            (
                 "dynamic",
                 self.team.planning == "dynamic",
                 self.worker.settings.collaboration_dynamic_enabled,
@@ -702,15 +695,30 @@ class CollaborationScheduler:
                 )
         await self.plan()
         await asyncio.to_thread(self.initialize)
+        distributed = self.snapshot.get("features", {}).get("distributed", False)
         active = set()
         try:
             while True:
+                if (
+                    distributed
+                    and not self.worker.settings.collaboration_distributed_enabled
+                ):
+                    raise PlatformError(
+                        409, "distributed_disabled", "跨 Worker 协作已关闭。"
+                    )
                 if await asyncio.to_thread(self.worker.is_cancelled, self.run):
                     raise RunCancelled()
                 tasks = await asyncio.to_thread(self.tasks)
                 by_key = {task["logical_key"]: task for task in tasks}
                 pending = [task for task in tasks if task["status"] == "pending"]
-                if not pending and not active:
+                if (
+                    not pending
+                    and not active
+                    and not (
+                        distributed
+                        and any(task["status"] in ACTIVE_TASKS for task in tasks)
+                    )
+                ):
                     break
                 advanced = False
                 for task in pending:
@@ -723,13 +731,22 @@ class CollaborationScheduler:
                             self.transition, task, "blocked", "前置任务未成功。"
                         )
                         advanced = True
-                    elif len(active) < self.team.max_parallel and all(
+                    elif (distributed or len(active) < self.team.max_parallel) and all(
                         dep["status"] == "succeeded" for dep in deps
                     ):
-                        await asyncio.to_thread(self.transition, task, "ready")
-                        active.add(asyncio.create_task(self.execute_task(task, tasks)))
+                        if distributed:
+                            from .task_leases import dispatch
+
+                            await asyncio.to_thread(dispatch, self, task)
+                        else:
+                            await asyncio.to_thread(self.transition, task, "ready")
+                            active.add(
+                                asyncio.create_task(self.execute_task(task, tasks))
+                            )
                         advanced = True
-                if active:
+                if distributed:
+                    await asyncio.sleep(0.05)
+                elif active:
                     done, active = await asyncio.wait(
                         active, return_when=asyncio.FIRST_COMPLETED
                     )

@@ -39,6 +39,7 @@ from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import journal_tables as jt
 from agent_platform.infrastructure import operations_tables as ot
+from agent_platform.infrastructure import remote_agent_tables as rat
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.errors import PlatformError
@@ -1004,6 +1005,7 @@ class OperationsService:
             *ct.COLLABORATION_TABLES,
             *jt.JOURNAL_TABLES,
             *cpt.CHECKPOINT_TABLES,
+            *rat.REMOTE_TABLES,
         )
         if phase == 0:
             self._expire_exports(tenant_id, all_jobs=True)
@@ -1123,6 +1125,26 @@ class OperationsService:
                             }
                         elif table in cpt.CHECKPOINT_TABLES:
                             values = {"payload_ciphertext": "", "payload_digest": ""}
+                        elif table is rat.credentials:
+                            values = {"name": "[已删除]", "active": False}
+                        elif table is rat.secrets:
+                            values = {"ciphertext": "", "digest": ""}
+                        elif table is rat.versions:
+                            values = {
+                                "descriptor": {"content_deleted": True},
+                                "digest": "",
+                                "enabled": False,
+                            }
+                        elif table is rat.endpoints:
+                            values = {
+                                "url": "",
+                                "health_status": "disabled",
+                                "health_until": 0,
+                                "health_error": "",
+                                "probe_owner": None,
+                                "probe_until": None,
+                                "probe_fence": table.c.probe_fence + 1,
+                            }
                         elif table is t.agents:
                             values = {
                                 "capability_keys": [],

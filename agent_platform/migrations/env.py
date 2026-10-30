@@ -11,9 +11,11 @@ from agent_platform.infrastructure import (  # noqa: F401
     gateway_tables,
     journal_tables,
     operations_tables,
+    remote_agent_tables,
     runtime_tables,
     support_tables,
     tables,
+    task_lease_tables,
     tenancy_tables,
 )
 from agent_platform.infrastructure.db import Database, metadata

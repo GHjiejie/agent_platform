@@ -642,7 +642,13 @@ class Platform:
             return self._save_agent(connection, user, values, agent_id)
 
     def _save_agent(
-        self, connection, user: dict, values: dict, agent_id: str | None = None
+        self,
+        connection,
+        user: dict,
+        values: dict,
+        agent_id: str | None = None,
+        *,
+        managed_remote=False,
     ) -> dict:
         self.require_current(connection, user, admin=True)
         if not agent_id:
@@ -670,6 +676,14 @@ class Platform:
                 "published_version": 0,
             }
         )
+        if (
+            current.get("remote_ref") or values.get("remote_ref")
+        ) and not managed_remote:
+            raise PlatformError(
+                409,
+                "remote_managed_agent",
+                "远程 Agent 配置请通过远程版本注册接口更新。",
+            )
         result = {**current, **values}
         from agent_platform.modules.agent_registry.contracts import AgentDeclaration
 
@@ -733,9 +747,15 @@ class Platform:
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
             return self._publish(connection, user, agent_id)
 
-    def _publish(self, connection, user: dict, agent_id: str) -> dict:
+    def _publish(
+        self, connection, user: dict, agent_id: str, *, managed_remote=False
+    ) -> dict:
         self.require_current(connection, user, admin=True)
         agent = self.owned(connection, t.agents, user, agent_id)
+        if agent.get("remote_ref") and not managed_remote:
+            raise PlatformError(
+                409, "remote_managed_agent", "远程 Agent 版本由远程注册接口发布。"
+            )
         if agent.get("model_id"):
             model = self.owned(connection, t.models, user, agent["model_id"])
             if not model["active"]:
@@ -773,6 +793,12 @@ class Platform:
             agent = self.owned(connection, t.agents, user, agent_id)
             if not agent["available"]:
                 raise PlatformError(409, "agent_unavailable", "Agent 已停用。")
+            if agent.get("remote_ref"):
+                raise PlatformError(
+                    409,
+                    "remote_team_member_only",
+                    "远程 Agent 通过团队任务接收明确分配的输入，请选择团队入口。",
+                )
             if not agent["published_version"]:
                 raise PlatformError(400, "agent_not_published", "请先发布 Agent。")
             result = {
@@ -831,6 +857,33 @@ class Platform:
             )
         spec["execution_policy"] = execution_policy.model_dump()
         spec["execution_limits"] = effective_limits(execution_policy, self.settings)
+        if spec.get("remote_ref"):
+            from agent_platform.modules.remote_agents.registry import RemoteRegistry
+
+            registration, endpoints = RemoteRegistry(self).eligible(
+                connection, user["tenant_id"], spec["remote_ref"]
+            )
+            if (
+                registration["agent_id"] != spec["id"]
+                or registration["descriptor"]["task_contracts"]
+                != spec["task_contracts"]
+            ):
+                raise PlatformError(
+                    409, "remote_binding_invalid", "远程版本与成员契约不一致。"
+                )
+            if not self.settings.collaboration_durable_enabled:
+                raise PlatformError(
+                    409, "remote_requires_journal", "远程协作需要开启持久执行日志。"
+                )
+            spec["remote_snapshot"] = {
+                "registration_id": registration["id"],
+                "version": registration["version"],
+                "descriptor": registration["descriptor"],
+                "digest": registration["digest"],
+                "endpoint_ids": [point["id"] for point in endpoints],
+            }
+            spec["membership_id"] = user.get("membership_id")
+            return spec
         policy = (
             connection.execute(
                 select(nt.tenant_settings).where(
@@ -1053,12 +1106,19 @@ class Platform:
                         409, "dynamic_planning_disabled", "动态协作规划尚未开放。"
                     )
                 team["features"] = {
+                    "distributed": self.settings.collaboration_distributed_enabled,
                     "dynamic": self.settings.collaboration_dynamic_enabled,
                     "parallel": self.settings.collaboration_parallel_enabled,
                     "durable": self.settings.collaboration_durable_enabled,
                     "recovery": self.settings.collaboration_durable_enabled
                     and self.settings.collaboration_recovery_enabled,
                 }
+                if team["features"]["distributed"] and not team["features"]["durable"]:
+                    raise PlatformError(
+                        409,
+                        "distributed_requires_journal",
+                        "跨 Worker 协作需要开启持久执行日志。",
+                    )
                 if (
                     team["features"]["durable"]
                     and not self.settings.secret_encryption_key
@@ -1079,7 +1139,11 @@ class Platform:
                     )
                 spec["team_snapshot"] = team
                 spec["snapshot_schema_version"] = (
-                    4 if team["features"]["durable"] else 3
+                    5
+                    if team["features"]["distributed"]
+                    else 4
+                    if team["features"]["durable"]
+                    else 3
                 )
             if ag_ui is not None:
                 # Only the API's validated protocol correlation belongs here;

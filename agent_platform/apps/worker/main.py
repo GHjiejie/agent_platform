@@ -47,6 +47,12 @@ class Worker:
         self._recover_cursor = ""
         self.max_run_cost = Decimal(self.settings.max_run_cost)
         self.invocation = InvocationService(self)
+        from agent_platform.modules.collaboration.task_leases import TaskLeaseQueue
+
+        self.member_queue = TaskLeaseQueue(self)
+        from agent_platform.modules.remote_agents.registry import RemoteHealthQueue
+
+        self.remote_health = RemoteHealthQueue(self)
         if not self.max_run_cost.is_finite() or self.max_run_cost <= 0:
             raise ValueError("PLATFORM_MAX_RUN_COST must be a finite positive amount")
 
@@ -684,13 +690,38 @@ class Worker:
 
     async def serve(self, stop: asyncio.Event) -> None:
         tasks: set[asyncio.Task] = set()
+        member_tasks: set[asyncio.Task] = set()
+        health_tasks: set[asyncio.Task] = set()
+        active_root_ids: set[str] = set()
         recovered_at = 0.0
         try:
-            while not stop.is_set():
+            while not stop.is_set() or tasks or member_tasks or health_tasks:
                 try:
                     if time.monotonic() - recovered_at > 10:
                         await asyncio.to_thread(self.recover)
                         recovered_at = time.monotonic()
+                    if not stop.is_set() and not health_tasks:
+                        probe = await asyncio.to_thread(self.remote_health.claim)
+                        if probe:
+                            health = asyncio.create_task(
+                                self.remote_health.execute(probe)
+                            )
+                            health_tasks.add(health)
+                            health.add_done_callback(health_tasks.discard)
+                    # Members use independent slots: a full set of waiting
+                    # root coordinators must never starve their own children.
+                    while (not stop.is_set() or tasks) and len(
+                        member_tasks
+                    ) < self.settings.worker_concurrency:
+                        claim = await asyncio.to_thread(
+                            self.member_queue.claim,
+                            root_ids=tuple(active_root_ids) if stop.is_set() else None,
+                        )
+                        if not claim:
+                            break
+                        member = asyncio.create_task(self.member_queue.execute(claim))
+                        member_tasks.add(member)
+                        member.add_done_callback(member_tasks.discard)
                     while (
                         not stop.is_set()
                         and len(tasks) < self.settings.worker_concurrency
@@ -700,21 +731,34 @@ class Worker:
                             break
                         task = asyncio.create_task(self.execute(run))
                         tasks.add(task)
+                        active_root_ids.add(run["id"])
                         task.add_done_callback(tasks.discard)
+                        task.add_done_callback(
+                            lambda _task, identifier=run["id"]: active_root_ids.discard(
+                                identifier
+                            )
+                        )
                 except Exception as exc:  # noqa: BLE001 - background supervisor retries storage availability
                     logger.error("worker cycle failed: %s", type(exc).__name__)
                 try:
-                    await asyncio.wait_for(
-                        stop.wait(), timeout=self.settings.worker_poll_seconds
-                    )
+                    if stop.is_set():
+                        await asyncio.sleep(self.settings.worker_poll_seconds)
+                    else:
+                        await asyncio.wait_for(
+                            stop.wait(), timeout=self.settings.worker_poll_seconds
+                        )
                 except TimeoutError:
                     pass
         except BaseException:
-            for task in tasks:
+            for task in tasks | member_tasks | health_tasks:
                 task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(
+                *tasks, *member_tasks, *health_tasks, return_exceptions=True
+            )
             raise
         else:
             # Ordinary SIGTERM stops claims and preserves model usage evidence by
             # allowing existing runs to finish within the Pod's grace period.
-            await asyncio.gather(*tasks, return_exceptions=True)
+            await asyncio.gather(
+                *tasks, *member_tasks, *health_tasks, return_exceptions=True
+            )

@@ -214,6 +214,23 @@ ROLE_PRIVILEGES = {
 }
 
 
+ROLE_PRIVILEGES["worker"]["agent_task_leases"] = ("INSERT", "SELECT", "UPDATE")
+ROLE_PRIVILEGES["maintenance"]["agent_task_leases"] = ("SELECT",)
+
+for _table in (
+    "remote_agent_credentials",
+    "remote_agent_versions",
+    "remote_agent_endpoints",
+):
+    ROLE_PRIVILEGES["api"][_table] = ("INSERT", "SELECT", "UPDATE")
+    ROLE_PRIVILEGES["worker"][_table] = (
+        ("SELECT", "UPDATE") if _table == "remote_agent_endpoints" else ("SELECT",)
+    )
+    ROLE_PRIVILEGES["maintenance"][_table] = ("SELECT", "UPDATE")
+ROLE_PRIVILEGES["api"]["remote_agent_credential_secrets"] = ("INSERT",)
+ROLE_PRIVILEGES["worker"]["remote_agent_credential_secrets"] = ("SELECT",)
+ROLE_PRIVILEGES["maintenance"]["remote_agent_credential_secrets"] = ("SELECT", "UPDATE")
+
 # Private journal content is not a public execution projection.
 ROLE_PRIVILEGES["worker"]["execution_journal"] = ("INSERT", "SELECT", "UPDATE")
 ROLE_PRIVILEGES["maintenance"]["execution_journal"] = ("SELECT", "UPDATE")

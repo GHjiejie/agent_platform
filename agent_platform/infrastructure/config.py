@@ -1,5 +1,6 @@
 """Explicit platform configuration, separate from existing demos."""
 
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -22,6 +23,9 @@ class Settings:
     collaboration_enabled: bool = False
     collaboration_dynamic_enabled: bool = False
     collaboration_parallel_enabled: bool = False
+    remote_agents_enabled: bool = False
+    remote_agent_allowed_origins: tuple[str, ...] = ()
+    collaboration_distributed_enabled: bool = False
     collaboration_durable_enabled: bool = False
     collaboration_recovery_enabled: bool = False
     collaboration_max_active_members: int = 8
@@ -59,6 +63,20 @@ class Settings:
     web_directory: Path = Path(__file__).resolve().parents[1] / "apps/web/dist"
 
     def __post_init__(self) -> None:
+        from agent_platform.modules.remote_agents.transport import Endpoint
+
+        if not isinstance(self.remote_agent_allowed_origins, (tuple, list)):
+            raise TypeError("Remote Agent origins must be a JSON array")
+        object.__setattr__(
+            self,
+            "remote_agent_allowed_origins",
+            tuple(self.remote_agent_allowed_origins),
+        )
+        for origin in self.remote_agent_allowed_origins:
+            if Endpoint.parse(origin).path:
+                raise ValueError(
+                    "Remote Agent allowlist entries must be origins without paths"
+                )
         if self.service_role not in {
             "api",
             "worker",
@@ -177,6 +195,17 @@ class Settings:
             worker_concurrency=int(os.getenv("PLATFORM_WORKER_CONCURRENCY", "4")),
             collaboration_recovery_enabled=os.getenv(
                 "PLATFORM_COLLABORATION_RECOVERY_ENABLED", "false"
+            ).lower()
+            == "true",
+            remote_agents_enabled=os.getenv(
+                "PLATFORM_REMOTE_AGENTS_ENABLED", "false"
+            ).lower()
+            == "true",
+            remote_agent_allowed_origins=json.loads(
+                os.getenv("PLATFORM_REMOTE_AGENT_ALLOWED_ORIGINS", "[]")
+            ),
+            collaboration_distributed_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_DISTRIBUTED_ENABLED", "false"
             ).lower()
             == "true",
             collaboration_durable_enabled=os.getenv(

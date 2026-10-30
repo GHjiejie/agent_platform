@@ -47,6 +47,12 @@ class AgentRegistry:
             )
         spec = dict(published["spec"])
         spec.update(AgentDeclaration.from_spec(spec).model_dump())
+        if spec.get("remote_ref"):
+            from agent_platform.modules.remote_agents.registry import RemoteRegistry
+
+            RemoteRegistry(self.platform).eligible(
+                connection, user["tenant_id"], spec["remote_ref"]
+            )
         return {**spec, "id": agent_id, "version": published["version"]}
 
     def discover(
@@ -83,12 +89,22 @@ class AgentRegistry:
             items, scanned = [], None
             for identifier in ids[:200]:
                 scanned = identifier
-                spec = self.resolve(
-                    connection,
-                    user,
-                    identifier,
-                    candidates[identifier] if candidates is not None else None,
-                )
+                try:
+                    spec = self.resolve(
+                        connection,
+                        user,
+                        identifier,
+                        candidates[identifier] if candidates is not None else None,
+                    )
+                except PlatformError as exc:
+                    if exc.code in {
+                        "remote_unavailable",
+                        "remote_agents_disabled",
+                        "remote_not_found",
+                        "agent_unavailable",
+                    }:
+                        continue
+                    raise
                 declaration = AgentDeclaration.from_spec(spec)
                 if declaration.execution_mode != "single":
                     continue

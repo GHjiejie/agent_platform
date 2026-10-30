@@ -41,6 +41,18 @@ from agent_platform.modules.platform import (
     audit,
     digest,
 )
+from agent_platform.modules.remote_agents.registry import (
+    AvailabilityChange as RemoteAvailabilityChange,
+)
+from agent_platform.modules.remote_agents.registry import (
+    CredentialCreate as RemoteCredentialCreate,
+)
+from agent_platform.modules.remote_agents.registry import (
+    RegistrationCreate as RemoteRegistrationCreate,
+)
+from agent_platform.modules.remote_agents.registry import (
+    RemoteRegistry,
+)
 
 logger = logging.getLogger(__name__)
 COOKIE = "agent_platform_session"
@@ -596,6 +608,75 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "platform_enabled": settings.collaboration_enabled,
             "features": collaboration_features(),
         }
+
+    @app.post(
+        "/api/v1/remote-agent-credentials",
+        response_model=r.RemoteCredentialResponse,
+        status_code=201,
+    )
+    def remote_credential_create(body: RemoteCredentialCreate, user=Depends(admin)):
+        return RemoteRegistry(platform).create_credential(user, body)
+
+    @app.get("/api/v1/remote-agent-credentials", response_model=r.RemoteCredentialList)
+    def remote_credential_list(
+        cursor: str | None = Query(default=None, max_length=64),
+        limit: int = Query(default=50, ge=1, le=100),
+        user=Depends(admin),
+    ):
+        return RemoteRegistry(platform).list(
+            user, cursor=cursor, limit=limit, credentials=True
+        )
+
+    @app.patch(
+        "/api/v1/remote-agent-credentials/{credential_id}",
+        response_model=r.RemoteAvailabilityResponse,
+    )
+    def remote_credential_change(
+        credential_id: str, body: RemoteAvailabilityChange, user=Depends(admin)
+    ):
+        return RemoteRegistry(platform).set_credential(
+            user, credential_id, body.enabled
+        )
+
+    @app.post(
+        "/api/v1/remote-agents",
+        response_model=r.RemoteRegistrationResponse,
+        status_code=201,
+    )
+    def remote_register(body: RemoteRegistrationCreate, user=Depends(admin)):
+        return RemoteRegistry(platform).register(user, body)
+
+    @app.get("/api/v1/remote-agents", response_model=r.RemoteRegistrationList)
+    def remote_list(
+        cursor: str | None = Query(default=None, max_length=64),
+        limit: int = Query(default=50, ge=1, le=100),
+        user=Depends(admin),
+    ):
+        return RemoteRegistry(platform).list(user, cursor=cursor, limit=limit)
+
+    @app.get(
+        "/api/v1/remote-agents/{registration_id}",
+        response_model=r.RemoteRegistrationResponse,
+    )
+    def remote_get(registration_id: str, user=Depends(admin)):
+        return RemoteRegistry(platform).get(user, registration_id)
+
+    @app.patch(
+        "/api/v1/remote-agents/{registration_id}/availability",
+        response_model=r.RemoteRegistrationResponse,
+    )
+    def remote_availability(
+        registration_id: str, body: RemoteAvailabilityChange, user=Depends(admin)
+    ):
+        return RemoteRegistry(platform).set_enabled(user, registration_id, body.enabled)
+
+    @app.post(
+        "/api/v1/remote-agents/{registration_id}/probe",
+        response_model=r.RemoteProbeResponse,
+        status_code=202,
+    )
+    def remote_probe(registration_id: str, user=Depends(admin)):
+        return RemoteRegistry(platform).request_probe(user, registration_id)
 
     @app.get("/api/v1/agents/discovery", response_model=r.DiscoveryResponse)
     def discover_agents(

@@ -229,6 +229,9 @@
         "collaborationDurableEnabled": {
           "type": "boolean"
         },
+        "collaborationDistributedEnabled": {
+          "type": "boolean"
+        },
         "collaborationRecoveryEnabled": {
           "type": "boolean"
         }

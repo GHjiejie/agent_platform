@@ -107,6 +107,7 @@ agents = Table(
     Column("capability_keys", JSON, nullable=False, default=list, server_default="[]"),
     Column("task_contracts", JSON, nullable=False, default=list, server_default="[]"),
     Column("collaboration_spec", JSON),
+    Column("remote_ref", JSON),
     Column("available", Boolean, nullable=False, default=True, server_default="true"),
     Column("published_version", Integer, nullable=False, default=0),
     UniqueConstraint("tenant_id", "id"),

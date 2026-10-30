@@ -47,6 +47,7 @@ config:
   collaborationParallelEnabled: false
   collaborationDurableEnabled: false
   collaborationRecoveryEnabled: false
+  collaborationDistributedEnabled: false
   collaborationMaxActiveMembers: 8
   collaborationCapacityWaitSeconds: 30
   mode: saas

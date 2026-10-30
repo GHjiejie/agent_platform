@@ -64,6 +64,7 @@ class CollaborationRuntimeTests(unittest.TestCase):
         max_parallel=1,
         parallel_enabled=False,
         durable_enabled=False,
+        distributed_enabled=False,
         recovery_enabled=False,
         member_tools=(),
     ):
@@ -150,6 +151,7 @@ class CollaborationRuntimeTests(unittest.TestCase):
             collaboration_dynamic_enabled=dynamic_enabled,
             collaboration_parallel_enabled=parallel_enabled,
             collaboration_durable_enabled=durable_enabled,
+            collaboration_distributed_enabled=distributed_enabled,
             collaboration_recovery_enabled=recovery_enabled,
         )
         self.platform.billing.credit(

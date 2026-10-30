@@ -65,6 +65,8 @@ class Database:
             "collaboration_tables",
             "journal_tables",
             "checkpoint_tables",
+            "task_lease_tables",
+            "remote_agent_tables",
             "operations_tables",
             "support_tables",
             "metering_tables",
@@ -131,6 +133,8 @@ class Database:
                     "collaboration_tables",
                     "journal_tables",
                     "checkpoint_tables",
+                    "task_lease_tables",
+                    "remote_agent_tables",
                     "operations_tables",
                     "metering_tables",
                 ):
