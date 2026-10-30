@@ -214,6 +214,18 @@ ROLE_PRIVILEGES = {
 }
 
 
+# Collaboration authority stays with the Worker; API only projects execution state.
+for _table in (
+    "collaboration_plans",
+    "agent_tasks",
+    "agent_executions",
+    "collaboration_artifacts",
+):
+    ROLE_PRIVILEGES["api"][_table] = ("SELECT",)
+    ROLE_PRIVILEGES["worker"][_table] = ("INSERT", "SELECT", "UPDATE")
+    ROLE_PRIVILEGES["maintenance"][_table] = ("SELECT", "UPDATE")
+
+
 def privileges_for(role):
     role = next((key for key, name in ROLE_NAMES.items() if name == role), role)
     return ROLE_PRIVILEGES[role]

@@ -34,6 +34,7 @@ from sqlalchemy import (
     update,
 )
 
+from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import operations_tables as ot
 from agent_platform.infrastructure import tables as t
@@ -998,6 +999,7 @@ class OperationsService:
             t.calls,
             nt.invitations,
             reservations_table,
+            *ct.COLLABORATION_TABLES,
         )
         if phase == 0:
             self._expire_exports(tenant_id, all_jobs=True)
@@ -1095,8 +1097,24 @@ class OperationsService:
                                 "spec": self._redacted_spec(row["spec"]),
                                 "error": "",
                             }
+                        elif table is ct.plans:
+                            values = {"plan": {"content_deleted": True}}
+                        elif table is ct.tasks:
+                            values = {"objective": "", "error": ""}
+                        elif table is ct.executions:
+                            values = {
+                                "input": {},
+                                "output": None,
+                                "error": "",
+                                "spec": self._redacted_spec(row["spec"]),
+                            }
+                        elif table is ct.artifacts:
+                            values = {"content": {"content_deleted": True}}
                         elif table is t.agents:
                             values = {
+                                "capability_keys": [],
+                                "task_contracts": [],
+                                "collaboration_spec": None,
                                 "system_prompt": "",
                                 "description": "",
                                 "tools": [],

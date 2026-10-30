@@ -147,6 +147,11 @@ class Platform:
                         "tools": list(template.tools),
                         "published_version": 1,
                     }
+                    from agent_platform.modules.agent_registry.contracts import (
+                        AgentDeclaration,
+                    )
+
+                    agent.update(AgentDeclaration.from_spec(agent).model_dump())
                     connection.execute(insert(t.agents).values(**agent))
                     connection.execute(
                         insert(t.agent_versions).values(
@@ -661,6 +666,14 @@ class Platform:
                 }
             )
             result = {**current, **values}
+            from agent_platform.modules.agent_registry.contracts import AgentDeclaration
+
+            try:
+                result.update(AgentDeclaration.from_spec(result).model_dump())
+            except ValueError as exc:
+                raise PlatformError(
+                    422, "invalid_agent_declaration", str(exc)
+                ) from None
             try:
                 # A nested PATCH merges declared fields; explicit null resets
                 # an inherited field. Empty object resets the whole policy.
@@ -723,6 +736,13 @@ class Platform:
                     raise PlatformError(
                         400, "model_disabled", "请先启用 Agent 使用的模型。"
                     )
+            from agent_platform.modules.agent_registry.contracts import AgentDeclaration
+            from agent_platform.modules.collaboration.team import freeze_team
+
+            agent.update(AgentDeclaration.from_spec(agent).model_dump())
+            team = freeze_team(self, connection, user, agent)
+            if team is not None:
+                agent["team_snapshot"] = team
             version = agent["published_version"] + 1
             connection.execute(
                 insert(t.agent_versions).values(
@@ -745,6 +765,8 @@ class Platform:
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
             self.identity.assert_current(connection, user, "runs.execute")
             agent = self.owned(connection, t.agents, user, agent_id)
+            if not agent["available"]:
+                raise PlatformError(409, "agent_unavailable", "Agent 已停用。")
             if not agent["published_version"]:
                 raise PlatformError(400, "agent_not_published", "请先发布 Agent。")
             result = {
@@ -785,6 +807,112 @@ class Platform:
                 ).mappings()
             ]
         return result
+
+    def freeze_execution_spec(
+        self, connection, user, spec, *, model_id=None, reasoning_effort=None
+    ):
+        # Clone nested JSON: members must never mutate another execution's spec.
+        spec = json.loads(json.dumps(spec))
+        execution_policy = read_policy(spec)
+        if reasoning_effort is not None:
+            execution_policy = read_policy(
+                {
+                    "execution_policy": {
+                        **execution_policy.model_dump(),
+                        "reasoning_effort": reasoning_effort,
+                    }
+                }
+            )
+        spec["execution_policy"] = execution_policy.model_dump()
+        spec["execution_limits"] = effective_limits(execution_policy, self.settings)
+        policy = (
+            connection.execute(
+                select(nt.tenant_settings).where(
+                    nt.tenant_settings.c.tenant_id == user["tenant_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+        def eligible_route(candidate):
+            resolved = self.gateway.resolve(
+                user["tenant_id"], candidate, connection=connection
+            )
+            declared = (
+                connection.scalar(
+                    select(gt.deployments.c.capabilities).where(
+                        gt.deployments.c.id == resolved["deployment_id"]
+                    )
+                )
+                or {}
+            )
+            if not declared.get("text") or (
+                spec.get("tools") and not declared.get("tools")
+            ):
+                raise PlatformError(
+                    400,
+                    "model_capability_required",
+                    "该模型部署不具备 Agent 所需的文本或工具能力。",
+                )
+            return resolved
+
+        preferred = model_id or spec.get("model_id")
+        if preferred:
+            model = self.owned(connection, t.models, user, preferred)
+            routing = eligible_route(model)
+        else:
+            rows = (
+                connection.execute(
+                    select(t.models)
+                    .where(
+                        t.models.c.tenant_id == user["tenant_id"],
+                        t.models.c.active.is_(True),
+                    )
+                    .order_by(t.models.c.created_at, t.models.c.id)
+                )
+                .mappings()
+                .all()
+            )
+            catalog = {row["id"]: dict(row) for row in rows}
+            candidates = list(
+                dict.fromkeys(
+                    [
+                        policy["default_model_id"],
+                        *policy["ordered_model_ids"],
+                        *catalog,
+                    ]
+                )
+            )
+            failure = None
+            model = None
+            for candidate in candidates:
+                if candidate not in catalog:
+                    continue
+                try:
+                    candidate_route = eligible_route(catalog[candidate])
+                except PlatformError as exc:
+                    failure = exc
+                    continue
+                model, routing = catalog[candidate], candidate_route
+                break
+            if model is None:
+                raise failure or PlatformError(
+                    400, "no_available_model", "暂无已授权且网关就绪的模型。"
+                )
+        if not model["active"]:
+            raise PlatformError(400, "model_disabled", "该模型已停用。")
+        # Freeze model identity and rate card for every call of this run.
+        if model_id or not spec.get("model_id"):
+            spec["max_tokens"] = min(spec["max_tokens"], model["max_output_tokens"])
+        spec["model_id"] = model["id"]
+        spec["model"] = model
+        spec["deployment_id"] = routing["deployment_id"]
+        spec["route"] = routing["route"]
+        spec["price_version_id"] = routing["price_version_id"]
+        spec["config_version"] = routing["config_version"]
+        spec["membership_id"] = user.get("membership_id")
+        return spec
 
     def enqueue(
         self,
@@ -886,107 +1014,37 @@ class Platform:
             )
             if not version:
                 raise PlatformError(400, "agent_not_published", "Agent 尚未发布。")
+            if not agent["available"]:
+                raise PlatformError(409, "agent_unavailable", "Agent 已停用。")
             spec = dict(version["spec"], version=version["version"])
-            spec["snapshot_schema_version"] = 2
-            execution_policy = read_policy(spec)
-            if reasoning_effort is not None:
-                execution_policy = read_policy(
-                    {
-                        "execution_policy": {
-                            **execution_policy.model_dump(),
-                            "reasoning_effort": reasoning_effort,
-                        }
-                    }
-                )
-            spec["execution_policy"] = execution_policy.model_dump()
-            spec["execution_limits"] = effective_limits(execution_policy, self.settings)
-            policy = (
-                connection.execute(
-                    select(nt.tenant_settings).where(
+            if spec.get("execution_mode") == "team":
+                enabled = connection.scalar(
+                    select(nt.tenant_settings.c.collaboration_enabled).where(
                         nt.tenant_settings.c.tenant_id == user["tenant_id"]
                     )
                 )
-                .mappings()
-                .one()
-            )
-
-            def eligible_route(candidate):
-                resolved = self.gateway.resolve(
-                    user["tenant_id"], candidate, connection=connection
-                )
-                declared = (
-                    connection.scalar(
-                        select(gt.deployments.c.capabilities).where(
-                            gt.deployments.c.id == resolved["deployment_id"]
-                        )
-                    )
-                    or {}
-                )
-                if not declared.get("text") or (
-                    spec.get("tools") and not declared.get("tools")
-                ):
+                if not self.settings.collaboration_enabled or not enabled:
                     raise PlatformError(
-                        400,
-                        "model_capability_required",
-                        "该模型部署不具备 Agent 所需的文本或工具能力。",
+                        409, "collaboration_disabled", "团队执行尚未开放。"
                     )
-                return resolved
+            spec["snapshot_schema_version"] = 2
+            spec = self.freeze_execution_spec(
+                connection,
+                user,
+                spec,
+                model_id=model_id,
+                reasoning_effort=reasoning_effort,
+            )
+            if spec.get("execution_mode") == "team":
+                from agent_platform.modules.collaboration.team import freeze_team
 
-            preferred = model_id or spec.get("model_id")
-            if preferred:
-                model = self.owned(connection, t.models, user, preferred)
-                routing = eligible_route(model)
-            else:
-                rows = (
-                    connection.execute(
-                        select(t.models)
-                        .where(
-                            t.models.c.tenant_id == user["tenant_id"],
-                            t.models.c.active.is_(True),
-                        )
-                        .order_by(t.models.c.created_at, t.models.c.id)
+                team = freeze_team(self, connection, user, spec)
+                for member in team["members"].values():
+                    member["spec"] = self.freeze_execution_spec(
+                        connection, user, member["spec"]
                     )
-                    .mappings()
-                    .all()
-                )
-                catalog = {row["id"]: dict(row) for row in rows}
-                candidates = list(
-                    dict.fromkeys(
-                        [
-                            policy["default_model_id"],
-                            *policy["ordered_model_ids"],
-                            *catalog,
-                        ]
-                    )
-                )
-                failure = None
-                model = None
-                for candidate in candidates:
-                    if candidate not in catalog:
-                        continue
-                    try:
-                        candidate_route = eligible_route(catalog[candidate])
-                    except PlatformError as exc:
-                        failure = exc
-                        continue
-                    model, routing = catalog[candidate], candidate_route
-                    break
-                if model is None:
-                    raise failure or PlatformError(
-                        400, "no_available_model", "暂无已授权且网关就绪的模型。"
-                    )
-            if not model["active"]:
-                raise PlatformError(400, "model_disabled", "该模型已停用。")
-            # Freeze model identity and rate card for every call of this run.
-            if model_id or not spec.get("model_id"):
-                spec["max_tokens"] = min(spec["max_tokens"], model["max_output_tokens"])
-            spec["model_id"] = model["id"]
-            spec["model"] = model
-            spec["deployment_id"] = routing["deployment_id"]
-            spec["route"] = routing["route"]
-            spec["price_version_id"] = routing["price_version_id"]
-            spec["config_version"] = routing["config_version"]
-            spec["membership_id"] = user.get("membership_id")
+                spec["team_snapshot"] = team
+                spec["snapshot_schema_version"] = 3
             if ag_ui is not None:
                 # Only the API's validated protocol correlation belongs here;
                 # client state, tools and prompts never enter the frozen spec.

@@ -19,6 +19,7 @@ class Settings:
     gateway_control_key: str = ""
     gateway_sync_interval: float = 2.0
     worker_concurrency: int = 4
+    collaboration_enabled: bool = False
     maintenance_interval: float = 30.0
     export_ttl_seconds: int = 86400
     maintenance_batch_size: int = 100
@@ -153,6 +154,10 @@ class Settings:
             gateway_sync_interval=float(
                 os.getenv("PLATFORM_GATEWAY_SYNC_INTERVAL", "2")
             ),
+            collaboration_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_ENABLED", "false"
+            ).lower()
+            == "true",
             worker_concurrency=int(os.getenv("PLATFORM_WORKER_CONCURRENCY", "4")),
             maintenance_interval=float(
                 os.getenv("PLATFORM_MAINTENANCE_INTERVAL", "30")

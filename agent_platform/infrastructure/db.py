@@ -62,6 +62,7 @@ class Database:
             "tenancy_tables",
             "gateway_tables",
             "runtime_tables",
+            "collaboration_tables",
             "operations_tables",
             "support_tables",
             "metering_tables",
@@ -125,6 +126,7 @@ class Database:
                     "tables",
                     "gateway_tables",
                     "runtime_tables",
+                    "collaboration_tables",
                     "operations_tables",
                     "metering_tables",
                 ):

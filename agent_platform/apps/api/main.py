@@ -19,7 +19,7 @@ from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from agent_platform.apps.api import responses as r
@@ -529,6 +529,85 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "context_window": settings.default_context_window,
         }
 
+    @app.get("/api/v1/agents/collaboration-settings")
+    def collaboration_settings(user=Depends(auth)):
+        from agent_platform.infrastructure import tenancy_tables as nt
+
+        with db.read() as connection:
+            row = (
+                connection.execute(
+                    select(nt.tenant_settings).where(
+                        nt.tenant_settings.c.tenant_id == user["tenant_id"]
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        return {
+            "enabled": row["collaboration_enabled"],
+            "version": row["version"],
+            "platform_enabled": settings.collaboration_enabled,
+        }
+
+    @app.patch("/api/v1/agents/collaboration-settings")
+    def update_collaboration_settings(
+        body: s.CollaborationSettings, user=Depends(admin)
+    ):
+        from agent_platform.infrastructure import tenancy_tables as nt
+        from agent_platform.modules.platform import audit
+
+        with db.transaction(f"tenant:{user['tenant_id']}") as connection:
+            platform.identity.assert_current(connection, user, "agents.manage")
+            result = connection.execute(
+                update(nt.tenant_settings)
+                .where(
+                    nt.tenant_settings.c.tenant_id == user["tenant_id"],
+                    nt.tenant_settings.c.version == body.expected_version,
+                )
+                .values(
+                    collaboration_enabled=body.enabled,
+                    version=body.expected_version + 1,
+                )
+            )
+            if result.rowcount != 1:
+                raise PlatformError(
+                    409, "version_conflict", "组织配置已变化，请刷新后重试。"
+                )
+            audit(connection, user, "agent.collaboration_settings", user["tenant_id"])
+        return {
+            "enabled": body.enabled,
+            "version": body.expected_version + 1,
+            "platform_enabled": settings.collaboration_enabled,
+        }
+
+    @app.get("/api/v1/agents/discovery")
+    def discover_agents(
+        capability: str | None = Query(default=None, max_length=64),
+        task_type: str | None = Query(default=None, max_length=64),
+        output_digest: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
+        limit: int = Query(default=50, ge=1, le=100),
+        cursor: str | None = Query(default=None, max_length=64),
+        user=Depends(auth),
+    ):
+        from agent_platform.modules.agent_registry.service import AgentRegistry
+
+        return AgentRegistry(platform).discover(
+            user,
+            capability=capability,
+            task_type=task_type,
+            output_digest=output_digest,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    @app.patch("/api/v1/agents/{agent_id}/availability")
+    def agent_availability(
+        agent_id: str, body: s.AgentAvailability, user=Depends(admin)
+    ):
+        from agent_platform.modules.agent_registry.service import AgentRegistry
+
+        return AgentRegistry(platform).set_availability(user, agent_id, body.available)
+
     @app.get("/api/v1/agents/execution-options")
     def agent_execution_options(user=Depends(auth)):
         from agent_platform.modules.execution_policy import (
@@ -556,6 +635,12 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
     def patch_agent(agent_id: str, body: s.AgentPatch, user=Depends(admin)):
         # Explicit null clears the model preference; omitted fields keep the draft.
         values = body.model_dump(exclude_none=True)
+        if "collaboration_spec" in body.model_fields_set:
+            values["collaboration_spec"] = (
+                body.collaboration_spec.model_dump()
+                if body.collaboration_spec
+                else None
+            )
         if "model_id" in body.model_fields_set:
             values["model_id"] = body.model_id
         if "execution_policy" in body.model_fields_set:

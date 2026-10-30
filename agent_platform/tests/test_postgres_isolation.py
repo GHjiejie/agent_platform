@@ -243,6 +243,52 @@ class PostgreSQLIsolationTests(unittest.TestCase):
             self.fixture.context(self.fixture.owner["id"], self.tenant_b)
         )
 
+    def test_collaboration_records_are_run_bound_and_rls_protected(self):
+        from agent_platform.infrastructure import collaboration_tables as ct
+
+        run = self.fixture.create_run(self.fixture.owner, self.session_a)
+        other = self.fixture.create_run(
+            self.fixture.context(self.fixture.owner["id"], self.tenant_b),
+            self.session_b,
+        )
+        worker = self.sandbox.database(self.sandbox.runtime_urls["worker"])
+        plan = {
+            "id": uuid4().hex,
+            "tenant_id": self.tenant_a,
+            "root_run_id": run["id"],
+            "created_at": now(),
+            "revision": 1,
+            "plan": {},
+            "digest": "0" * 64,
+        }
+        with worker.transaction("tenant:" + self.tenant_a) as connection:
+            connection.execute(insert(ct.plans).values(**plan))
+        with self.db.tenant_scope(self.tenant_b), self.db.read() as connection:
+            self.assertEqual(connection.execute(select(ct.plans)).all(), [])
+        with self.db.read() as connection:
+            self.assertEqual(connection.execute(select(ct.plans)).all(), [])
+        with self.db.tenant_scope(self.tenant_a), self.db.read() as connection:
+            self.assertEqual(connection.scalar(select(ct.plans.c.id)), plan["id"])
+        with (
+            self.assertRaises(IntegrityError),
+            worker.transaction("tenant:" + self.tenant_a) as connection,
+        ):
+            connection.execute(
+                insert(ct.plans).values(
+                    **{**plan, "id": uuid4().hex, "root_run_id": other["id"]}
+                )
+            )
+        with (
+            self.assertRaises(DBAPIError),
+            self.db.transaction("tenant:" + self.tenant_a) as connection,
+        ):
+            connection.execute(
+                insert(ct.plans).values(**{**plan, "id": uuid4().hex, "revision": 2})
+            )
+        for table in ct.COLLABORATION_TABLES:
+            with worker.transaction("tenant:" + self.tenant_b) as connection:
+                self.assertEqual(connection.execute(select(table)).all(), [])
+
     def test_all_services_are_non_owner_and_all_tenant_tables_force_rls(self):
         for service, url in self.sandbox.runtime_urls.items():
             with self.subTest(service=service):

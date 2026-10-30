@@ -101,7 +101,14 @@ class ComposeStoragePermissionsTests(unittest.TestCase):
             "agent_platform.migrations.versions.0010_service_permissions"
         )
         self.assertEqual(migration.ROLE_NAMES, ROLE_NAMES)
-        self.assertEqual(migration.PRIVILEGES, ROLE_PRIVILEGES)
+        collaboration = import_module(
+            "agent_platform.migrations.versions.0012_agent_registry"
+        )
+        expected = {role: dict(grants) for role, grants in migration.PRIVILEGES.items()}
+        for role, grants in collaboration.COLLABORATION_PRIVILEGES.items():
+            for table in collaboration.COLLABORATION_TABLES:
+                expected[role][table.name] = grants
+        self.assertEqual(expected, ROLE_PRIVILEGES)
 
 
 if __name__ == "__main__":
