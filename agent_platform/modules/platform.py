@@ -32,7 +32,12 @@ from agent_platform.infrastructure.db import Database
 from agent_platform.infrastructure.errors import PlatformError
 from agent_platform.modules.authorization import capabilities, require_capability
 from agent_platform.modules.billing.service import BillingService, reservations_table
-from agent_platform.modules.builtin_agents import BUILTIN_AGENTS, COMMON_INSTRUCTIONS
+from agent_platform.modules.builtin_agents import (
+    BUILTIN_AGENTS,
+    COMMON_INSTRUCTIONS,
+    DEFAULT_AGENT_KEY,
+    RETIRED_BUILTIN_KEYS,
+)
 from agent_platform.modules.execution_policy import (
     ReasoningEffort,
     effective_limits,
@@ -131,6 +136,30 @@ class Platform:
                 for template in BUILTIN_AGENTS:
                     if template.key in installed:
                         continue
+                    if template.key == DEFAULT_AGENT_KEY:
+                        existing = connection.scalar(
+                            select(t.agents.c.id)
+                            .where(
+                                t.agents.c.tenant_id == tenant_id,
+                                t.agents.c.builtin_key.is_(None),
+                                t.agents.c.name == "normal",
+                            )
+                            .order_by(t.agents.c.created_at, t.agents.c.id)
+                            .limit(1)
+                        )
+                        if existing:
+                            connection.execute(
+                                update(t.agents)
+                                .where(
+                                    t.agents.c.id == existing,
+                                    t.agents.c.tenant_id == tenant_id,
+                                )
+                                .values(builtin_key=DEFAULT_AGENT_KEY)
+                            )
+                            audit(
+                                connection, dict(owner), "agent.adopt_default", existing
+                            )
+                            continue
                     agent = {
                         "id": uid(),
                         "tenant_id": tenant_id,
@@ -158,6 +187,62 @@ class Platform:
                         )
                     )
                     audit(connection, dict(owner), "agent.bootstrap", agent["id"])
+                self._retire_builtin_agents(connection, dict(owner))
+
+    def _retire_builtin_agents(self, connection, owner: dict) -> None:
+        """Keep conversation history and immutable run snapshots when removing roles."""
+        tenant_id = owner["tenant_id"]
+        retired = list(
+            connection.scalars(
+                select(t.agents.c.id).where(
+                    t.agents.c.tenant_id == tenant_id,
+                    t.agents.c.builtin_key.in_(RETIRED_BUILTIN_KEYS),
+                )
+            )
+        )
+        if not retired:
+            return
+        sessions = select(t.sessions.c.id).where(
+            t.sessions.c.tenant_id == tenant_id, t.sessions.c.agent_id.in_(retired)
+        )
+        if connection.scalar(
+            select(t.runs.c.id)
+            .where(
+                t.runs.c.tenant_id == tenant_id,
+                t.runs.c.session_id.in_(sessions),
+                t.runs.c.status.in_(ACTIVE_STATUSES),
+            )
+            .limit(1)
+        ):
+            raise PlatformError(
+                409, "agent_retirement_busy", "请等待旧助手的运行结束后再更新助手目录。"
+            )
+        normal_id = connection.scalar(
+            select(t.agents.c.id).where(
+                t.agents.c.tenant_id == tenant_id,
+                t.agents.c.builtin_key == DEFAULT_AGENT_KEY,
+            )
+        )
+        connection.execute(
+            update(t.sessions)
+            .where(
+                t.sessions.c.tenant_id == tenant_id, t.sessions.c.agent_id.in_(retired)
+            )
+            .values(agent_id=normal_id)
+        )
+        connection.execute(
+            delete(t.agent_versions).where(
+                t.agent_versions.c.tenant_id == tenant_id,
+                t.agent_versions.c.agent_id.in_(retired),
+            )
+        )
+        connection.execute(
+            delete(t.agents).where(
+                t.agents.c.tenant_id == tenant_id, t.agents.c.id.in_(retired)
+            )
+        )
+        for agent_id in retired:
+            audit(connection, owner, "agent.retire", agent_id)
 
     def _bootstrap_admin(self) -> None:
         """Create the first tenant only with an explicit, non-default password."""

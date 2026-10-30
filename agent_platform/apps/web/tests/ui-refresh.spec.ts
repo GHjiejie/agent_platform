@@ -21,7 +21,7 @@ const agents = [
   { id: "writer", name: "写作助手", description: "整理想法，完善文章。", builtin_key: null },
 ].map((agent) => ({ ...agent, model_id: null, system_prompt: "", temperature: 0.5, max_steps: 6, max_tokens: 2048, tools: [], published_version: 1, starter_prompts: ["帮我写一段产品介绍", "整理一份工作计划"], created_at: created }));
 
-async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boolean; longHistory?: boolean; empty?: boolean; dropStream?: boolean; burst?: boolean; delayFinalSnapshot?: boolean } = {}) {
+async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boolean; longHistory?: boolean; empty?: boolean; dropStream?: boolean; burst?: boolean; delayFinalSnapshot?: boolean; reducedAgents?: boolean } = {}) {
   const writes: { path: string; body: Record<string, unknown>; key?: string }[] = [];
   const errors: string[] = [];
   const resumes: string[] = [];
@@ -54,11 +54,14 @@ async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boole
       writes.push({ path, body: body ?? {}, key: request.headers()["idempotency-key"] });
     }
     if (resource === "/agents" && method === "POST") return json({ ...request.postDataJSON(), id: "created-agent" }, 201);
-    if (resource === "/agents") return json({ items: options.empty ? [] : agents });
+    if (resource === "/agents") return json({ items: options.empty ? [] : options.reducedAgents ? [
+      { ...agents[0], name: "可视化界面助手", builtin_key: "generative_ui", tools: ["generate_sandboxed_ui"] },
+      { ...agents[1], id: "normal", name: "normal", builtin_key: "normal" },
+    ] : agents });
     if (resource === "/agents/execution-options") return json({ timeout_seconds: 300, max_cost: "1", max_steps: 50, max_output_tokens: 2000000, default_output_tokens: 131072, default_context_window: 1048576 });
     if (resource === "/token-defaults") return json({ output_tokens: 131072, context_window: 1048576 });
     if (resource === "/models") return json({ items: options.empty ? [] : models });
-    if (resource === "/sessions" && method === "POST") { newSession.title = String(request.postDataJSON().title); return json(newSession, 201); }
+    if (resource === "/sessions" && method === "POST") { newSession.title = String(request.postDataJSON().title); newSession.agent_id = String(request.postDataJSON().agent_id); return json(newSession, 201); }
     if (resource === "/sessions") return json({ items: options.empty ? [] : [session, ...(hasRun ? [newSession] : [])] });
     if (resource === "/sessions/history") return json({ ...session, messages, runs: [] });
     if (resource === "/sessions/new-session") {
@@ -248,6 +251,39 @@ test("切换新对话后迟到的流式快照不会恢复旧回复", async ({ pa
   await expect(page.getByRole("heading", { name: "今天想聊些什么？" })).toBeVisible();
   await expect(page.locator(".pg-message-text")).toHaveCount(0);
   await expect(input).toBeEnabled();
+  expect(mock.errors).toEqual([]);
+});
+
+test("新对话默认 normal，切换助手后新建仍重置为 normal", async ({ page }) => {
+  const mock = await fixture(page, { reducedAgents: true });
+  await page.goto("/#playground?tenant=team-a");
+  const picker = page.getByRole("combobox", { name: "当前 Agent", exact: true });
+  await expect(picker).toContainText("normal");
+  await picker.click();
+  await page.getByRole("option", { name: /^可视化界面助手/ }).click();
+  await expect(picker).toContainText("可视化界面助手");
+  await page.getByRole("button", { name: "新建对话", exact: true }).click();
+  await expect(picker).toContainText("normal");
+  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+  await input.fill("普通聊天");
+  await input.press("Enter");
+  await expect(page.getByText("已收到，我们一起把想法变成清晰的行动。", { exact: true })).toBeVisible();
+  expect(mock.writes.find((request) => request.path.endsWith("/sessions"))?.body.agent_id).toBe("normal");
+  expect(mock.errors).toEqual([]);
+});
+
+test("显式选择和历史会话保留原助手，失效助手链接回退 normal", async ({ page }) => {
+  const mock = await fixture(page, { reducedAgents: true });
+  const picker = page.getByRole("combobox", { name: "当前 Agent", exact: true });
+  await page.goto("/#playground?tenant=team-a&agent=assistant");
+  await expect(picker).toContainText("可视化界面助手");
+  await page.goto("/#playground?tenant=team-a&session=history");
+  await expect(picker).toContainText("可视化界面助手");
+  await expect(picker).toBeDisabled();
+  await page.getByRole("button", { name: "新建对话", exact: true }).click();
+  await expect(picker).toContainText("normal");
+  await page.goto("/#playground?tenant=team-a&agent=removed-agent");
+  await expect(picker).toContainText("normal");
   expect(mock.errors).toEqual([]);
 });
 

@@ -118,6 +118,9 @@ class APIIntegrationTest(unittest.TestCase):
 
         agents = self.request("GET", "/agents").json()["items"]
         self.assertEqual(len(agents), len(BUILTIN_AGENTS))
+        self.assertEqual(
+            {a["builtin_key"] for a in agents}, {"normal", "generative_ui"}
+        )
         self.assertTrue(
             all(a["model_id"] is None and a["published_version"] == 1 for a in agents)
         )
@@ -153,6 +156,88 @@ class APIIntegrationTest(unittest.TestCase):
         self.assertEqual(
             self.request("GET", f"/sessions/{session['id']}").json()["messages"], []
         )
+
+    def test_retired_roles_preserve_history_and_adopt_existing_normal(self):
+        _, old_agent, session = self.create_resources()
+        normal = next(
+            a
+            for a in self.request("GET", "/agents").json()["items"]
+            if a["builtin_key"] == "normal"
+        )
+        self.request(
+            "PATCH",
+            f"/agents/{normal['id']}",
+            json={"system_prompt": "Keep my normal draft"},
+        )
+        with self.db.transaction(f"tenant:{self.tenant}") as conn:
+            conn.execute(
+                update(t.agents)
+                .where(t.agents.c.id == normal["id"])
+                .values(builtin_key=None)
+            )
+            conn.execute(
+                update(t.agents)
+                .where(t.agents.c.id == old_agent["id"])
+                .values(builtin_key="support")
+            )
+        response = self.enqueue(session)
+        self.assertEqual(response.status_code, 202, response.text)
+        run_id = response.json()["id"]
+        with self.db.read() as conn:
+            snapshot = conn.scalar(select(t.runs.c.spec).where(t.runs.c.id == run_id))
+            messages = list(
+                conn.execute(
+                    select(t.messages).where(t.messages.c.session_id == session["id"])
+                ).mappings()
+            )
+        # Updating a catalog must never change an in-flight conversation's agent.
+        with self.assertRaises(PlatformError) as error:
+            self.platform._bootstrap_builtin_agents()
+        self.assertEqual(error.exception.code, "agent_retirement_busy")
+        with self.db.read() as conn:
+            self.assertIsNone(
+                conn.scalar(
+                    select(t.agents.c.builtin_key).where(t.agents.c.id == normal["id"])
+                )
+            )
+        with self.db.transaction(f"tenant:{self.tenant}") as conn:
+            conn.execute(
+                update(t.runs)
+                .where(t.runs.c.id == run_id)
+                .values(status="succeeded", finished_at=now())
+            )
+        self.platform._bootstrap_builtin_agents()
+        self.platform._bootstrap_builtin_agents()
+        after = self.request("GET", "/agents").json()["items"]
+        self.assertEqual({a["builtin_key"] for a in after}, {"normal", "generative_ui"})
+        adopted = next(a for a in after if a["builtin_key"] == "normal")
+        self.assertEqual(adopted["id"], normal["id"])
+        self.assertEqual(adopted["system_prompt"], "Keep my normal draft")
+        detail = self.request("GET", f"/sessions/{session['id']}")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(detail.json()["agent_id"], normal["id"])
+        with self.db.read() as conn:
+            self.assertEqual(
+                conn.scalar(select(t.runs.c.spec).where(t.runs.c.id == run_id)),
+                snapshot,
+            )
+            self.assertEqual(
+                list(
+                    conn.execute(
+                        select(t.messages).where(
+                            t.messages.c.session_id == session["id"]
+                        )
+                    ).mappings()
+                ),
+                messages,
+            )
+            self.assertIsNone(
+                conn.scalar(
+                    select(t.agent_versions.c.agent_id).where(
+                        t.agent_versions.c.agent_id == old_agent["id"]
+                    )
+                )
+            )
 
     def test_run_reasoning_override_is_validated_frozen_and_part_of_idempotency(self):
         _, _, session = self.create_resources()

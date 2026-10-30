@@ -513,7 +513,11 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
                     )
                     if version:
                         published.append(
-                            {**version["spec"], "published_version": version["version"]}
+                            {
+                                **version["spec"],
+                                "published_version": version["version"],
+                                "builtin_key": row.get("builtin_key"),
+                            }
                         )
             rows = published
         return {

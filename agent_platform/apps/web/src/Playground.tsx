@@ -65,6 +65,9 @@ export function Playground({ name }: { name?: string }) {
   const toast = useToast();
   const published =
     agents.data?.items.filter((agent) => agent.published_version) ?? [];
+  const defaultAgentId = published.find((agent) => agent.builtin_key === "normal")?.id
+    ?? published.find((agent) => agent.name === "normal")?.id
+    ?? published[0]?.id ?? "";
   const selectedAgent = agents.data?.items.find(
     (agent) => agent.id === (detail?.agent_id ?? agentId),
   );
@@ -101,8 +104,8 @@ export function Playground({ name }: { name?: string }) {
     },
   });
   useEffect(() => {
-    if (!agentId && published.length) setAgentId(published[0].id);
-  }, [agentId, published]);
+    if (!sessionId && agents.data && !published.some((agent) => agent.id === agentId)) setAgentId(defaultAgentId);
+  }, [agentId, sessionId, agents.data, published, defaultAgentId]);
   useEffect(() => {
     const listener = () => {
       const next = query();
@@ -251,10 +254,14 @@ export function Playground({ name }: { name?: string }) {
     selection.current++;
     setLiveText("");
     setLiveReasoning([]);
+    setLiveArtifacts([]);
     setError("");
     setDraft("");
     setCanceling(false);
-    location.hash = tenantLink(`playground${agentId ? `?agent=${agentId}` : ""}`, tenantScope);
+    setAgentId(defaultAgentId);
+    setModelId("");
+    setReasoningEffort("");
+    location.hash = tenantLink(`playground${defaultAgentId ? `?agent=${defaultAgentId}` : ""}`, tenantScope);
   }
   function chooseSession(session: Session) {
     reset();
