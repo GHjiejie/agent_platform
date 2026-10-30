@@ -47,7 +47,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         async def invoke(messages, tools):
             self.fail("unsupported snapshot must not invoke a model")
 
-        for version in (0, 4, "2", 2.0, True, None):
+        for version in (0, 999, "2", 2.0, True, None):
             with (
                 self.subTest(version=version),
                 self.assertRaises(RuntimeFailure) as caught,

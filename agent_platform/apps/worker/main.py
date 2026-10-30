@@ -129,20 +129,8 @@ class Worker:
                 try:
                     self._authorize_identity(connection, dict(row))
                 except PlatformError:
-                    connection.execute(
-                        update(t.runs)
-                        .where(
-                            t.runs.c.id == row["id"], t.runs.c.tenant_id == tenant_id
-                        )
-                        .values(
-                            status="cancelled", cancel_requested=True, finished_at=now()
-                        )
-                    )
-                    append_event(
-                        connection,
-                        row["id"],
-                        "run.cancelled",
-                        {"status": "cancelled", "error": "运行授权已失效。"},
+                    self._close_due_run(
+                        connection, row, "cancelled", "运行授权已失效。"
                     )
                     continue
                 frozen_timeout = (
@@ -154,6 +142,8 @@ class Worker:
                     frozen_timeout, self.settings.run_timeout
                 )
                 deadline = started_at + run_timeout if run_timeout is not None else None
+                if row["recovery_count"]:
+                    deadline = row["deadline"]
                 changes = {
                     "status": "running",
                     "owner": self.owner,
@@ -206,6 +196,9 @@ class Worker:
                 fence=run["fence"] + 1,
                 error=message,
                 lease_until=None,
+                cancel_requested=True
+                if status == "cancelled"
+                else run["cancel_requested"],
                 finished_at=now(),
             )
         )
@@ -508,7 +501,10 @@ class Worker:
                 self._recover_tenant(tenant_id)
 
     def _recover_tenant(self, tenant_id: str) -> None:
+        from agent_platform.modules.collaboration.recovery import settle_journal_usage
         from agent_platform.modules.metering import apply_ready_evidence
+
+        settle_journal_usage(self, tenant_id)
 
         for _ in range(16):
             if not apply_ready_evidence(
@@ -548,7 +544,20 @@ class Worker:
                 timed_out = run["deadline"] is not None and (
                     run["deadline"] <= checked_at
                 )
+                recovery_error = None
+                if not queued and not timed_out and not run["cancel_requested"]:
+                    from agent_platform.modules.collaboration.recovery import (
+                        requeue_safe_run,
+                    )
+
+                    try:
+                        if requeue_safe_run(self, connection, run):
+                            continue
+                    except PlatformError as exc:
+                        recovery_error = exc.message
                 state = "expired" if queued or timed_out else "failed"
+                if run["cancel_requested"]:
+                    state = "cancelled"
                 message = (
                     "排队超时，未调用模型。"
                     if queued
@@ -556,6 +565,8 @@ class Worker:
                     if timed_out
                     else "执行进程失联，未自动重放。"
                 )
+                if recovery_error:
+                    message = recovery_error
                 self._close_due_run(connection, run, state, message)
 
         mismatches = [
@@ -602,9 +613,27 @@ class Worker:
             )
         for row in receipts:
             if row["status"] == "reserved" and row["run_status"] in terminal:
-                receipt = self.platform.billing.unresolved(
-                    tenant_id, row["call_id"], "执行结束但缺少结算证据。"
-                )
+                from agent_platform.infrastructure.journal_tables import journal
+
+                with self.db.read() as connection:
+                    unsent = connection.scalar(
+                        select(journal.c.id).where(
+                            journal.c.tenant_id == tenant_id,
+                            journal.c.call_id == row["call_id"],
+                            journal.c.state.in_(("prepared", "rejected")),
+                            journal.c.sent_at.is_(None),
+                        )
+                    )
+                if unsent:
+                    receipt = self.platform.billing.release(
+                        tenant_id,
+                        row["call_id"],
+                        "执行已终止，持久日志确认请求尚未发送。",
+                    )
+                else:
+                    receipt = self.platform.billing.unresolved(
+                        tenant_id, row["call_id"], "执行结束但缺少结算证据。"
+                    )
             else:
                 from agent_platform.modules.billing.service import _serialize
 

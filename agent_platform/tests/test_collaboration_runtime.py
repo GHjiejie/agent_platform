@@ -54,7 +54,19 @@ class CollaborationRuntimeTests(unittest.TestCase):
     create_resources = registry_tests.AgentRegistryTests.create_resources
     enqueue = registry_tests.AgentRegistryTests.enqueue
 
-    def setup_team(self, *, optional=False, summary_policy=None):
+    def setup_team(
+        self,
+        *,
+        optional=False,
+        summary_policy=None,
+        planning="template",
+        dynamic_enabled=False,
+        max_parallel=1,
+        parallel_enabled=False,
+        durable_enabled=False,
+        recovery_enabled=False,
+        member_tools=(),
+    ):
         model, _, _ = self.create_resources()
         members = []
         for index in range(2):
@@ -67,6 +79,7 @@ class CollaborationRuntimeTests(unittest.TestCase):
                     "max_tokens": 128,
                     "max_steps": 3,
                     "system_prompt": f"Private role {index}",
+                    "tools": list(member_tools) if index == 0 else [],
                     "task_contracts": [
                         {
                             "task_type": "work",
@@ -95,6 +108,8 @@ class CollaborationRuntimeTests(unittest.TestCase):
             "max_tokens": 128,
             "collaboration_spec": {
                 "members": members,
+                "planning": planning,
+                "max_parallel": max_parallel,
                 "allow_partial": optional,
                 "tasks": [
                     {
@@ -129,7 +144,14 @@ class CollaborationRuntimeTests(unittest.TestCase):
             "/agents/collaboration-settings",
             json={"enabled": True, "expected_version": setting["version"]},
         )
-        self.platform.settings = replace(self.settings, collaboration_enabled=True)
+        self.platform.settings = replace(
+            self.settings,
+            collaboration_enabled=True,
+            collaboration_dynamic_enabled=dynamic_enabled,
+            collaboration_parallel_enabled=parallel_enabled,
+            collaboration_durable_enabled=durable_enabled,
+            collaboration_recovery_enabled=recovery_enabled,
+        )
         self.platform.billing.credit(
             self.tenant, self.fixture.owner["id"], "1", "Team test", uid()
         )

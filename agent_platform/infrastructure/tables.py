@@ -166,6 +166,7 @@ runs = Table(
     # Nullable only for legacy writers; enqueue freezes this before publication.
     Column("queue_expires_at", Float),
     Column("lease_until", Float),
+    Column("recovery_count", Integer, nullable=False, default=0, server_default="0"),
     Column("deadline", Float),
     Column("fence", Integer, nullable=False, default=0),
     Column("finished_at", String(40)),

@@ -116,6 +116,8 @@ artifacts = Table(
     Column("content", JSON, nullable=False),
     Column("digest", String(64), nullable=False),
     Column("validation_status", String(24), nullable=False),
+    Column("source_key", String(160)),
+    UniqueConstraint("tenant_id", "root_run_id", "execution_id", "source_key"),
     UniqueConstraint("tenant_id", "root_run_id", "execution_id", "kind", "version"),
     ForeignKeyConstraint(
         ["tenant_id", "root_run_id", "execution_id"],

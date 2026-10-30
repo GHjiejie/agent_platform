@@ -16,8 +16,10 @@ export type CloseRequest = { "reason": string; };
 export type CollaborationArtifact = { "content": unknown; "digest": string; "execution_id": string; "id": string; "kind": string; "validation_status": string; "version": number; };
 export type CollaborationDetail = { "artifacts": Array<CollaborationArtifact>; "enabled": boolean; "executions": Array<CollaborationExecution>; "fees": CollaborationFees; "max_cost": string | null; "outcome": string | null; "run_id": string; "status": string; "tasks": Array<CollaborationTask>; };
 export type CollaborationExecution = { "agent_id": string; "agent_version": number; "attempt": number; "created_at": string; "error": string; "fees": CollaborationFees; "finished_at": string | null; "id": string; "input_digest": string; "input_summary": string | null; "model_alias": string; "name": string; "output": unknown; "role": string; "status": string; "task_id": string | null; };
+export type CollaborationFeatures = { "durable": boolean; "dynamic": boolean; "parallel": boolean; "recovery": boolean; };
 export type CollaborationFees = { "confirmed": string; "pending": string; };
 export type CollaborationSettings = { "enabled": boolean; "expected_version": number; };
+export type CollaborationSettingsResponse = { "enabled": boolean; "features": CollaborationFeatures; "platform_enabled": boolean; "version": number; };
 export type CollaborationTask = { "agent_id": string; "agent_version": number; "dependencies": Array<string>; "error"?: string; "id": string; "logical_key": string; "member_key": string; "objective": string; "required": boolean; "status": string; "task_type": string; };
 export type Context = { "description": string; "value": string; };
 export type CostBudget = { "expected_version"?: number | null; "limit": string; };
@@ -97,6 +99,8 @@ export type VideoPart = { "id"?: string | null; "metadata"?: unknown | null; "so
 export type WalletResponse = { "available": string; "balance": string; "block_reason": string; "blocked": boolean; "currency": string; "reserved": string; };
 
 export type ApiResponseByOperation = {
+  "GET /api/v1/agents/collaboration-settings": CollaborationSettingsResponse;
+  "PATCH /api/v1/agents/collaboration-settings": CollaborationSettingsResponse;
   "GET /api/v1/agents/discovery": DiscoveryResponse;
   "POST /api/v1/auth/login": AuthResponse;
   "GET /api/v1/auth/me": AuthResponse;
@@ -119,6 +123,8 @@ export type ApiResponseByOperation = {
   "POST /api/v2/platform/tenants/{tenant_id}/billing/budget-projection/rebuild": BudgetRebuildResponse;
   "GET /api/v2/platform/tenants/{tenant_id}/billing/calls/{call_id}/receipts": UsageReceiptsResponse;
   "GET /api/v2/platform/tenants/{tenant_id}/billing/wallet": WalletResponse;
+  "GET /api/v2/tenants/{tenant_id}/agents/collaboration-settings": CollaborationSettingsResponse;
+  "PATCH /api/v2/tenants/{tenant_id}/agents/collaboration-settings": CollaborationSettingsResponse;
   "GET /api/v2/tenants/{tenant_id}/agents/discovery": DiscoveryResponse;
   "GET /api/v2/tenants/{tenant_id}/billing/wallet": WalletResponse;
   "GET /api/v2/tenants/{tenant_id}/runs": RunsResponse;

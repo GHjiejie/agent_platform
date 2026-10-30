@@ -5,10 +5,12 @@ import json
 import time
 from contextlib import suppress
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import and_, func, insert, select, update
 
 from agent_platform.infrastructure import collaboration_tables as ct
+from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure.errors import PlatformError
+from agent_platform.infrastructure.journal_tables import journal as journal_table
 from agent_platform.modules.agent_registry.contracts import AgentDeclaration
 from agent_platform.modules.run_records import append_event, now, uid
 from agent_platform.modules.runtime.context import ExecutionContext
@@ -18,7 +20,7 @@ from agent_platform.modules.runtime.generative_ui import GeneratedUiArguments
 
 from . import artifacts
 from .context import messages_for_task, task_input
-from .planner import validate_plan
+from .planner import parse_proposal, planning_messages, validate_plan
 
 ACTIVE_TASKS = ("pending", "ready", "running", "waiting_capacity", "waiting_evidence")
 
@@ -71,6 +73,7 @@ class CollaborationScheduler:
         self.db = worker.db
         self.snapshot = run["spec"]["team_snapshot"]
         self.team = validate_plan(self.snapshot)
+        self.initialized = False
 
     def guard(self, connection):
         current = self.worker._assert_lease(connection, self.run)
@@ -79,9 +82,12 @@ class CollaborationScheduler:
             raise RunCancelled()
 
     def initialize(self):
-        if self.team.planning != "template" or self.team.max_parallel != 1:
+        if self.team.max_parallel > 1 and not (
+            self.snapshot.get("features", {}).get("parallel", False)
+            and self.worker.settings.collaboration_parallel_enabled
+        ):
             raise PlatformError(
-                409, "team_mode_unavailable", "当前阶段仅开放固定模板顺序执行。"
+                409, "parallel_execution_disabled", "成员并行执行尚未开放。"
             )
         with self.db.transaction(f"tenant:{self.run['tenant_id']}") as connection:
             self.guard(connection)
@@ -92,7 +98,22 @@ class CollaborationScheduler:
                 )
             )
             if existing:
+                if self.run.get("recovery_count") and not self.initialized:
+                    connection.execute(
+                        update(ct.tasks)
+                        .where(
+                            ct.tasks.c.tenant_id == self.run["tenant_id"],
+                            ct.tasks.c.root_run_id == self.run["id"],
+                            ct.tasks.c.status.in_(
+                                ("ready", "running", "waiting_capacity")
+                            ),
+                        )
+                        .values(status="pending", revision=ct.tasks.c.revision + 1)
+                    )
+                self.initialized = True
                 return
+            if not self.team.tasks:
+                raise PlatformError(422, "empty_plan", "计划至少需要一个任务。")
             plan_id = uid()
             plan = self.team.model_dump()
             connection.execute(
@@ -130,6 +151,109 @@ class CollaborationScheduler:
             append_event(
                 connection, self.run["id"], "collaboration.planned", {"tasks": public}
             )
+            self.initialized = True
+
+    def restore_plan(self):
+        with self.db.transaction(f"tenant:{self.run['tenant_id']}") as connection:
+            self.guard(connection)
+            row = (
+                connection.execute(
+                    select(ct.plans).where(
+                        ct.plans.c.tenant_id == self.run["tenant_id"],
+                        ct.plans.c.root_run_id == self.run["id"],
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if row:
+                if canonical_digest(row["plan"]) != row["digest"]:
+                    raise PlatformError(409, "plan_integrity", "保存的计划无法验证。")
+                self.team = validate_plan(self.snapshot, row["plan"])
+                return True
+            return False
+
+    def previous_execution(self, *, task=None, role="member"):
+        if not self.run.get("recovery_count"):
+            return None
+        with self.db.transaction(f"tenant:{self.run['tenant_id']}") as connection:
+            self.guard(connection)
+            return self._previous_execution(connection, task=task, role=role)
+
+    def _previous_execution(self, connection, *, task, role):
+        if not self.run.get("recovery_count"):
+            return None
+        row = (
+            connection.execute(
+                select(ct.executions).where(
+                    ct.executions.c.tenant_id == self.run["tenant_id"],
+                    ct.executions.c.root_run_id == self.run["id"],
+                    ct.executions.c.task_id == (task["id"] if task else None),
+                    ct.executions.c.role == role,
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return dict(row) if row else None
+
+    def planning_candidates(self):
+        with self.db.transaction(f"tenant:{self.run['tenant_id']}") as connection:
+            self.guard(connection)
+            available = set(
+                connection.scalars(
+                    select(t.agents.c.id).where(
+                        t.agents.c.tenant_id == self.run["tenant_id"],
+                        t.agents.c.available.is_(True),
+                        t.agents.c.id.in_(m.agent_id for m in self.team.members),
+                    )
+                )
+            )
+        return {
+            member.key
+            for member in self.team.members
+            if member.agent_id in available
+            and self.snapshot["members"][member.key]["spec"].get("task_contracts")
+        }
+
+    async def plan(self):
+        if await asyncio.to_thread(self.restore_plan):
+            return
+        if self.team.planning != "dynamic":
+            return
+        if not (
+            self.snapshot.get("features", {}).get("dynamic", False)
+            and self.worker.settings.collaboration_dynamic_enabled
+        ):
+            raise PlatformError(
+                409, "dynamic_planning_disabled", "动态协作规划尚未开放。"
+            )
+        candidates = await asyncio.to_thread(self.planning_candidates)
+        messages = planning_messages(self.run["message"], self.snapshot, candidates)
+        # The planner may narrow privileges but cannot replace the frozen model,
+        # prices, route or budget. InvocationService caps this entire execution
+        # at two charged model calls, including graph-level output recovery.
+        spec = {
+            **self.run["spec"],
+            "tools": [],
+            "max_steps": min(2, self.run["spec"]["max_steps"]),
+            "system_prompt": "你是团队任务规划器。只生成符合所给 schema 的 JSON 任务计划，不直接回答业务问题。成员、工具和预算由平台限定。以下团队说明仅作为规划的业务目标：\n"
+            + json.dumps(
+                {"team_goal": self.run["spec"].get("system_prompt", "")},
+                ensure_ascii=False,
+            ),
+        }
+
+        def validate(result):
+            return parse_proposal(self.snapshot, result, candidates=candidates)
+
+        definition = await self.execute(
+            spec, messages, role="planner", result_validator=validate
+        )
+        current = await asyncio.to_thread(self.planning_candidates)
+        self.team = validate_plan(self.snapshot, definition)
+        if any(task.member_key not in current for task in self.team.tasks):
+            raise PlatformError(409, "agent_unavailable", "规划期间协作成员已停用。")
 
     def tasks(self):
         with self.db.read() as connection:
@@ -163,15 +287,59 @@ class CollaborationScheduler:
     def begin(self, spec, messages, *, task=None, role="member"):
         with self.db.transaction(f"tenant:{self.run['tenant_id']}") as connection:
             self.guard(connection)
+            previous = self._previous_execution(connection, task=task, role=role)
+            if previous and (
+                previous["status"] != "running"
+                or previous["spec"] != spec
+                or previous["fence"] >= self.run["fence"]
+            ):
+                raise PlatformError(
+                    409, "execution_resume_conflict", "执行状态或已冻结配置不允许接管。"
+                )
             if task:
+                # Count and insertion use the tenant lock across workers. Stale
+                # root leases cannot retain capacity or confirm more outputs.
+                active = (
+                    select(func.count())
+                    .select_from(
+                        ct.executions.join(
+                            t.runs,
+                            and_(
+                                t.runs.c.tenant_id == ct.executions.c.tenant_id,
+                                t.runs.c.id == ct.executions.c.root_run_id,
+                                t.runs.c.fence == ct.executions.c.fence,
+                                t.runs.c.owner == ct.executions.c.owner,
+                            ),
+                        )
+                    )
+                    .where(
+                        ct.executions.c.tenant_id == self.run["tenant_id"],
+                        ct.executions.c.role == "member",
+                        ct.executions.c.status == "running",
+                        t.runs.c.status.in_(("running", "cancelling")),
+                        t.runs.c.lease_until > time.time(),
+                    )
+                )
+                if (
+                    connection.scalar(active)
+                    >= self.worker.settings.collaboration_max_active_members
+                    or connection.scalar(
+                        active.where(ct.executions.c.root_run_id == self.run["id"])
+                    )
+                    >= self.team.max_parallel
+                ):
+                    return None
                 changed = connection.execute(
                     update(ct.tasks)
-                    .where(ct.tasks.c.id == task["id"], ct.tasks.c.status == "ready")
+                    .where(
+                        ct.tasks.c.id == task["id"],
+                        ct.tasks.c.status.in_(("ready", "waiting_capacity")),
+                    )
                     .values(status="running", revision=ct.tasks.c.revision + 1)
                 )
                 if changed.rowcount != 1:
                     raise PlatformError(409, "task_already_started", "任务状态已变化。")
-            identifier = uid()
+            identifier = previous["id"] if previous else uid()
             row = {
                 "id": identifier,
                 "tenant_id": self.run["tenant_id"],
@@ -189,7 +357,36 @@ class CollaborationScheduler:
                 "fence": self.run["fence"],
                 "created_at": now(),
             }
-            connection.execute(insert(ct.executions).values(**row))
+            if previous:
+                connection.execute(
+                    update(ct.executions)
+                    .where(
+                        ct.executions.c.id == identifier,
+                        ct.executions.c.fence == previous["fence"],
+                    )
+                    .values(owner=self.run["owner"], fence=self.run["fence"])
+                )
+                connection.execute(
+                    update(journal_table)
+                    .where(
+                        journal_table.c.tenant_id == self.run["tenant_id"],
+                        journal_table.c.root_run_id == self.run["id"],
+                        journal_table.c.execution_id == identifier,
+                    )
+                    .values(
+                        owner=self.run["owner"],
+                        fence=self.run["fence"],
+                        revision=journal_table.c.revision + 1,
+                        updated_at=now(),
+                    )
+                )
+                row = {
+                    **previous,
+                    "owner": self.run["owner"],
+                    "fence": self.run["fence"],
+                }
+            else:
+                connection.execute(insert(ct.executions).values(**row))
             append_event(
                 connection,
                 self.run["id"],
@@ -201,6 +398,8 @@ class CollaborationScheduler:
                     "role": role,
                     "description": task["objective"]
                     if task
+                    else "规划协作任务"
+                    if role == "planner"
                     else "汇总已确认的任务结果",
                 },
             )
@@ -211,6 +410,29 @@ class CollaborationScheduler:
             execution_id=identifier,
             role=role,
         )
+
+    async def admit(self, spec, messages, *, task, role):
+        started = time.monotonic()
+        waiting = False
+        while True:
+            context = await asyncio.to_thread(
+                self.begin, spec, messages, task=task, role=role
+            )
+            if context is not None:
+                return context
+            if not waiting:
+                await asyncio.to_thread(self.transition, task, "waiting_capacity")
+                waiting = True
+            if (
+                time.monotonic() - started
+                >= self.worker.settings.collaboration_capacity_wait_seconds
+            ):
+                raise PlatformError(
+                    429, "member_capacity_timeout", "等待协作成员容量超时，请稍后重试。"
+                )
+            # Only capacity is retried. Provider/billing 429 terminates the task.
+            # Waiting creates neither an execution nor a model reservation.
+            await asyncio.sleep(0.1)
 
     def complete(self, context, output, *, error=None):
         with self.db.transaction(f"tenant:{self.run['tenant_id']}") as connection:
@@ -273,10 +495,50 @@ class CollaborationScheduler:
                 "execution_id": context.execution_id,
                 "task_id": context.task_id,
             }
+            if key := data.get("_operation_key"):
+                for previous_event in connection.scalars(
+                    select(t.run_events.c.data).where(
+                        t.run_events.c.tenant_id == self.run["tenant_id"],
+                        t.run_events.c.run_id == self.run["id"],
+                        t.run_events.c.type == kind,
+                    )
+                ):
+                    if (
+                        previous_event.get("execution_id") == context.execution_id
+                        and previous_event.get("_operation_key") == key
+                    ):
+                        if canonical_digest(previous_event) != canonical_digest(data):
+                            raise PlatformError(
+                                409,
+                                "execution_event_conflict",
+                                "同一执行步骤不能确认不同事件。",
+                            )
+                        return
             if kind == "artifact.created":
                 content = GeneratedUiArguments.model_validate(
                     data["content"]
                 ).model_dump()
+                source_key = data["id"]
+                previous = (
+                    connection.execute(
+                        select(ct.artifacts).where(
+                            ct.artifacts.c.tenant_id == self.run["tenant_id"],
+                            ct.artifacts.c.root_run_id == self.run["id"],
+                            ct.artifacts.c.execution_id == context.execution_id,
+                            ct.artifacts.c.source_key == source_key,
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if previous:
+                    if previous["digest"] != canonical_digest(content):
+                        raise PlatformError(
+                            409,
+                            "artifact_source_conflict",
+                            "同一工具执行不能确认不同成果。",
+                        )
+                    return
                 existing = list(
                     connection.scalars(
                         select(ct.artifacts.c.id).where(
@@ -293,14 +555,38 @@ class CollaborationScheduler:
                     "generative_ui",
                     content,
                     version=len(existing) + 1,
+                    source_key=source_key,
                 )
                 data.update(id=artifact["id"], content=content, validated=True)
             append_event(connection, self.run["id"], kind, data)
 
-    async def execute(self, spec, messages, *, task=None, role="member", contract=None):
-        context = await asyncio.to_thread(
-            self.begin, spec, messages, task=task, role=role
+    async def execute(
+        self,
+        spec,
+        messages,
+        *,
+        task=None,
+        role="member",
+        contract=None,
+        result_validator=None,
+    ):
+        previous = await asyncio.to_thread(
+            self.previous_execution, task=task, role=role
         )
+        if previous:
+            if previous["status"] == "succeeded":
+                return previous["output"]
+            if previous["status"] != "running":
+                raise PlatformError(
+                    409, "execution_already_terminal", "先前执行已终止，不能自动重做。"
+                )
+            messages = previous["input"]
+        context = await self.admit(spec, messages, task=task, role=role)
+        journal = None
+        if self.snapshot.get("features", {}).get("durable", False):
+            from agent_platform.modules.runtime.journal import DurableJournal
+
+            journal = DurableJournal(self.worker, context)
 
         async def invoke(history, tools):
             return await self.worker.invocation.invoke(context, history, tools)
@@ -319,10 +605,15 @@ class CollaborationScheduler:
                 remaining = max(0, self.run["deadline"] - time.time())
                 timeout = min(timeout, remaining) if timeout else remaining
             async with asyncio.timeout(timeout):
-                result = await execute_agent(spec, messages, invoke, emit, cancelled)
-                if contract:
+                result = await execute_agent(
+                    spec, messages, invoke, emit, cancelled, journal=journal
+                )
+                if contract or result_validator:
+                    validate = result_validator or (
+                        lambda value: artifacts.parse_result(value, contract)
+                    )
                     try:
-                        output = artifacts.parse_result(result, contract)
+                        output = validate(result)
                     except PlatformError:
                         # One bounded correction; cumulative model calls are enforced
                         # by InvocationService even though the graph restarts.
@@ -335,9 +626,15 @@ class CollaborationScheduler:
                             },
                         ]
                         result = await execute_agent(
-                            spec, repaired, invoke, emit, cancelled
+                            spec,
+                            repaired,
+                            invoke,
+                            emit,
+                            cancelled,
+                            journal=journal,
+                            namespace="repair",
                         )
-                        output = artifacts.parse_result(result, contract)
+                        output = validate(result)
                 else:
                     output = result
             await asyncio.to_thread(self.complete, context, output)
@@ -345,6 +642,8 @@ class CollaborationScheduler:
         except (RunCancelled, asyncio.CancelledError):
             raise
         except Exception as exc:
+            if isinstance(exc, PlatformError) and exc.status == 403:
+                raise RunCancelled() from exc
             error = getattr(exc, "message", "成员任务执行失败。")
             with suppress(PlatformError, TimeoutError):
                 await asyncio.to_thread(self.complete, context, None, error=error)
@@ -378,32 +677,74 @@ class CollaborationScheduler:
             )
 
     async def run_team(self, history):
+        for mode, requested, enabled in (
+            (
+                "dynamic",
+                self.team.planning == "dynamic",
+                self.worker.settings.collaboration_dynamic_enabled,
+            ),
+            (
+                "parallel",
+                self.team.max_parallel > 1,
+                self.worker.settings.collaboration_parallel_enabled,
+            ),
+            (
+                "recovery",
+                bool(self.run.get("recovery_count")),
+                self.worker.settings.collaboration_recovery_enabled,
+            ),
+        ):
+            if requested and not (
+                self.snapshot.get("features", {}).get(mode, False) and enabled
+            ):
+                raise PlatformError(
+                    409, "collaboration_mode_disabled", "当前协作执行模式已关闭。"
+                )
+        await self.plan()
         await asyncio.to_thread(self.initialize)
-        while True:
-            if await asyncio.to_thread(self.worker.is_cancelled, self.run):
-                raise RunCancelled()
-            tasks = await asyncio.to_thread(self.tasks)
-            by_key = {task["logical_key"]: task for task in tasks}
-            pending = [task for task in tasks if task["status"] == "pending"]
-            if not pending:
-                break
-            advanced = False
-            for task in pending:
-                deps = [by_key[key] for key in task["dependencies"]]
-                if any(
-                    dep["status"] in ("failed", "blocked", "cancelled") for dep in deps
-                ):
-                    await asyncio.to_thread(
-                        self.transition, task, "blocked", "前置任务未成功。"
-                    )
-                    advanced = True
-                elif all(dep["status"] == "succeeded" for dep in deps):
-                    await asyncio.to_thread(self.transition, task, "ready")
-                    await self.execute_task(task, tasks)
-                    advanced = True
+        active = set()
+        try:
+            while True:
+                if await asyncio.to_thread(self.worker.is_cancelled, self.run):
+                    raise RunCancelled()
+                tasks = await asyncio.to_thread(self.tasks)
+                by_key = {task["logical_key"]: task for task in tasks}
+                pending = [task for task in tasks if task["status"] == "pending"]
+                if not pending and not active:
                     break
-            if not advanced:
-                raise PlatformError(409, "plan_stalled", "任务依赖无法继续。")
+                advanced = False
+                for task in pending:
+                    deps = [by_key[key] for key in task["dependencies"]]
+                    if any(
+                        dep["status"] in ("failed", "blocked", "cancelled")
+                        for dep in deps
+                    ):
+                        await asyncio.to_thread(
+                            self.transition, task, "blocked", "前置任务未成功。"
+                        )
+                        advanced = True
+                    elif len(active) < self.team.max_parallel and all(
+                        dep["status"] == "succeeded" for dep in deps
+                    ):
+                        await asyncio.to_thread(self.transition, task, "ready")
+                        active.add(asyncio.create_task(self.execute_task(task, tasks)))
+                        advanced = True
+                if active:
+                    done, active = await asyncio.wait(
+                        active, return_when=asyncio.FIRST_COMPLETED
+                    )
+                    # Retrieve every result before propagating cancellation so
+                    # simultaneous failures do not leak unobserved exceptions.
+                    results = await asyncio.gather(*done, return_exceptions=True)
+                    for result in results:
+                        if isinstance(result, BaseException):
+                            raise result
+                elif not advanced:
+                    raise PlatformError(409, "plan_stalled", "任务依赖无法继续。")
+        finally:
+            for future in active:
+                future.cancel()
+            await asyncio.gather(*active, return_exceptions=True)
         tasks = await asyncio.to_thread(self.tasks)
         unsuccessful = [task for task in tasks if task["status"] != "succeeded"]
         if any(task["required"] for task in unsuccessful) or (

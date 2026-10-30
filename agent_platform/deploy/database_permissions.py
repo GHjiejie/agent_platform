@@ -214,6 +214,13 @@ ROLE_PRIVILEGES = {
 }
 
 
+# Private journal content is not a public execution projection.
+ROLE_PRIVILEGES["worker"]["execution_journal"] = ("INSERT", "SELECT", "UPDATE")
+ROLE_PRIVILEGES["maintenance"]["execution_journal"] = ("SELECT", "UPDATE")
+for _table in ("execution_checkpoints", "execution_checkpoint_writes"):
+    ROLE_PRIVILEGES["worker"][_table] = ("INSERT", "SELECT", "UPDATE")
+    ROLE_PRIVILEGES["maintenance"][_table] = ("SELECT", "UPDATE")
+
 # Collaboration authority stays with the Worker; API only projects execution state.
 for _table in (
     "collaboration_plans",

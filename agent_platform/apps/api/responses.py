@@ -31,6 +31,20 @@ class ResponseModel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
 
+class CollaborationFeatures(ResponseModel):
+    dynamic: bool
+    parallel: bool
+    durable: bool
+    recovery: bool
+
+
+class CollaborationSettingsResponse(ResponseModel):
+    enabled: bool
+    version: int
+    platform_enabled: bool
+    features: CollaborationFeatures
+
+
 class MembershipResponse(ResponseModel):
     id: str
     tenant_id: str

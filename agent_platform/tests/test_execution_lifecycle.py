@@ -592,9 +592,12 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                         )
                     stamp = datetime.now(UTC).isoformat()
                     deadline = time.time() + 30
+                    historical_runs = Table(
+                        "platform_runs", MetaData(), autoload_with=db.engine
+                    )
                     with db.transaction(f"tenant:{context['tenant_id']}") as connection:
                         connection.execute(
-                            insert(t.runs).values(
+                            insert(historical_runs).values(
                                 id="historical-run",
                                 tenant_id=context["tenant_id"],
                                 user_id=context["id"],
@@ -604,6 +607,8 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                                 spec={},
                                 message="Keep input",
                                 status="running",
+                                error="",
+                                cancel_requested=False,
                                 idempotency_key="historical-key",
                                 request_hash="historical-hash",
                                 owner="old-owner",

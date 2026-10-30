@@ -1,6 +1,6 @@
-# 固定团队协作操作与验收
+# 团队协作操作与验收
 
-本文对应阶段 B：同组织已发布成员、固定任务模板、一个 Worker 按依赖顺序执行。一次提问创建一个主 Run，成员与汇总使用独立执行记录，主会话只保存一条最终答案。动态规划、并行及自动续跑尚未开放。
+本文对应阶段 B：同组织已发布成员、固定任务模板、一个 Worker 按依赖顺序执行。一次提问创建一个主 Run，成员与汇总使用独立执行记录，主会话只保存一条最终答案。阶段 C 已提供动态规划、并行及受控续跑实现，默认关闭，尚待真实模型质量、费用和耗时评估。下文先说明阶段 B 的默认行为，再列出阶段 C 的启用条件。
 
 ## 开启与准备
 
@@ -56,3 +56,63 @@ PLATFORM_COLLABORATION_SMOKE=1 PLATFORM_E2E_BASE_URL=http://127.0.0.1:5183 agent
 PostgreSQL 需要一次性验收数据库 `agent_platform_acceptance[_suffix]`，并显式设置 `PLATFORM_ACCEPTANCE_POSTGRES_ISOLATED=1` 和 `PLATFORM_ACCEPTANCE_POSTGRES_URL`。`test_postgres_isolation.PostgreSQLIsolationTests.test_sequential_team_executes_with_deployed_service_roles` 用生产权限矩阵的非 owner 服务角色完成模板安装、准入、三成员执行、图表及汇总，验证成果与费用。没有配置时显示跳过，不能将跳过声明为 PostgreSQL 已通过。
 
 质量评估和单 Agent 对比属于阶段 C：确定性模拟测试只能证明协议、隔离和故障行为，不能据此宣称团队回答质量优于单 Agent。阶段 B 模板保持用户显式选择，不默认将普通对话切为团队。
+
+
+## 阶段 C：受控启用与恢复边界
+
+本次提交包含 C1–C4 实现与 C5 的确定性验证、评估脚本；不代表 C5 已全部验收，也没有修改部署环境。启用前必须使用迁移身份升级到 `0015_execution_checkpoints`，同时更新 API、Worker 和权限矩阵。新增加密日志与检查点仅允许 Worker 读写及维护角色执行规定的清理操作，API 与 gateway-sync 不可读取其原文。
+
+API 与 Worker 使用一致的以下配置；组织协作开关仍需开启：
+
+| 配置 | 默认 | 用途 |
+| --- | --- | --- |
+| `PLATFORM_COLLABORATION_DYNAMIC_ENABLED` | `false` | 在冻结成员候选中生成并校验计划，最多一次修复 |
+| `PLATFORM_COLLABORATION_PARALLEL_ENABLED` | `false` | 同一个 Worker 内最多两个成员任务并行 |
+| `PLATFORM_COLLABORATION_DURABLE_ENABLED` | `false` | 保存加密模型/工具调用证据与执行检查点 |
+| `PLATFORM_COLLABORATION_RECOVERY_ENABLED` | `false` | 对具备完整恢复证据的运行允许租约接管 |
+| `PLATFORM_COLLABORATION_MAX_ACTIVE_MEMBERS` | `8` | 每组织活跃成员执行上限，独立于根 Run 并发 |
+| `PLATFORM_COLLABORATION_CAPACITY_WAIT_SECONDS` | `30` | 容量等待秒数，允许范围大于 0 且不超过 300 |
+
+持久执行还要求有效的 `PLATFORM_SECRET_ENCRYPTION_KEY`。API 冻结运行功能配置；持久执行快照为版本 4，原有版本 3 团队继续遵循保守失败策略。持久化开关关闭阻止后续运行采用该能力，已冻结的持久运行仍需保留证据写入能力和解密密钥。动态、并行和恢复能力还会在执行前检查当前服务开关；不要将关闭所有开关等同于主动取消所有运行。停止具体运行使用取消接口，回滚旧程序前排空新快照运行。
+
+团队编辑器读取组织设置返回的 `features`，仅在平台开放时允许选择动态规划及双任务并行。规划只能改变任务计划，不能扩大成员白名单、模型、工具或预算。规划、修复、成员与汇总费用全部归根 Run。容量等待不创建模型预占；预算竞争采用原子准入，汇总预留继续生效。供应商 429 不会触发无限重试。
+
+恢复依据如下，账务凭据本身不能代替完整输出：
+
+| 中断位置 / 证据 | 恢复行为 |
+| --- | --- |
+| 已准备、尚未标记发送 | 可用原调用标识继续发送，复用已存在的合法预占 |
+| 完整输出已确认 | 校验加密输出摘要并复用，不再发起同一模型或观察调用 |
+| 模型或观察工具已标记发送，完整输出未知 | 停止执行，不自动重发；费用保持待确认 |
+| 纯函数工具结果未知 | 在相同冻结请求与当前执行权限下允许重新计算 |
+| 任务及成果已确认 | 保留任务、执行与成果标识，仅继续剩余依赖 |
+| 当前权限撤销、取消、超时或证据损坏 | 不继续派发；已确认用量仍照常结算 |
+
+最多允许三次接管，接管不延长原执行截止时间。新持有者必须持有效根租约与 fence；旧持有者不能更新执行日志、检查点或任务。检查点按租户、根运行、执行及初始/修复阶段隔离，仅保存执行进度，不独立授予重放权限。SSE 重连恢复展示，Worker 接管恢复执行，两者分别验收。阶段 C 尚不支持跨 Worker 独立子任务领取或远程 Agent，这些仍属于阶段 D。
+
+新增确定性验证命令：
+
+```bash
+python -m unittest agent_platform.tests.test_collaboration_dynamic agent_platform.tests.test_collaboration_parallel agent_platform.tests.test_execution_journal agent_platform.tests.test_execution_checkpoints agent_platform.tests.test_collaboration_recovery agent_platform.tests.test_collaboration_evaluation -v
+```
+
+恢复测试使用独立子进程在发送前、发送后、收到响应后及任务确认后强制退出，并验证并行分支恢复、观察结果复用、撤权、取消和 SSE 游标。PostgreSQL 的 `test_durable_team_journal_uses_worker_only_permissions_and_rls` 另验证真实服务身份下的持久执行与权限隔离。
+
+## 阶段 C：真实模型评估（待执行）
+
+评估脚本在临时测试组织中使用同一模型比较单 Agent、固定团队和动态团队，覆盖完整数据、缺失数据及含干扰指令的输入，共九次运行。所有运行共享一个总费用预算；记录结构化答案得分、模型调用次数、配置报价下的费用、待确认调用及耗时。出现未知费用时停止继续测试。确定性网关仅检验评估脚本本身，不能替代真实质量结果。
+
+配置测试网关与专用密钥环境变量后，在项目根目录执行（报价按每百万 token，金额单位与网关账务约定一致）：
+
+```bash
+python -m agent_platform.tests.collaboration_evaluation \
+  --gateway-url "$COLLABORATION_EVAL_GATEWAY_URL" \
+  --model "$COLLABORATION_EVAL_MODEL" \
+  --api-key-env COLLABORATION_EVAL_API_KEY \
+  --input-price "$COLLABORATION_EVAL_INPUT_PRICE" \
+  --output-price "$COLLABORATION_EVAL_OUTPUT_PRICE" \
+  --max-cost "$COLLABORATION_EVAL_MAX_COST" \
+  --report /tmp/collaboration-evaluation.json
+```
+
+报告路径必须不存在，避免覆盖验收证据。测试仅发送合成任务数据；总费用约束按配置报价计算，不等同于供应商最终发票保证。当前未运行真实模型评估，团队继续由用户显式选择，四个高级功能开关保持默认关闭。完成评估并核对结果前，不将阶段 C 标记为全部完成。

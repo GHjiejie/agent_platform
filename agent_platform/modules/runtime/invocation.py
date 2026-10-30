@@ -3,7 +3,8 @@
 import asyncio
 import json
 import time
-from dataclasses import replace
+from contextlib import suppress
+from dataclasses import asdict, replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
@@ -398,10 +399,31 @@ class InvocationService:
                     connection, run["tenant_id"], call_id, attempt_id or call_id
                 )
 
-    def register_call(self, run: dict, call_id: str) -> None:
+    def register_call(self, run: dict, call_id: str, *, resume=False) -> None:
         model = run["spec"]["model"]
         with self.db.transaction(f"tenant:{run['tenant_id']}") as connection:
             self._assert_lease(connection, run)
+            if resume:
+                previous = (
+                    connection.execute(
+                        select(t.calls).where(
+                            t.calls.c.tenant_id == run["tenant_id"],
+                            t.calls.c.id == call_id,
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+                if previous:
+                    if (
+                        previous["run_id"] != run["id"]
+                        or previous["execution_id"] != run.get("execution_id")
+                        or previous["status"] not in {"admitting", "running"}
+                    ):
+                        raise PlatformError(
+                            409, "call_resume_conflict", "调用状态不允许继续。"
+                        )
+                    return
             team = run.get("root_spec", run["spec"]).get("team_snapshot")
             if team:
                 count_query = (
@@ -459,17 +481,66 @@ class InvocationService:
             )
 
     async def invoke(
-        self, context: ExecutionContext, messages: list[dict], tools: list[dict]
+        self,
+        context: ExecutionContext,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        journal=None,
+        operation_key=None,
     ) -> ModelReply:
         run = context.invocation_run()
         with self.db.tenant_scope(run["tenant_id"]):
-            return await self._invoke(run, messages, tools)
+            record = None
+            if journal is not None:
+                record = await asyncio.to_thread(
+                    journal.prepare,
+                    operation_key,
+                    "model",
+                    {"spec": context.spec, "messages": messages, "tools": tools},
+                )
+                action = await asyncio.to_thread(journal.recovery_action, record["id"])
+                if action == "reuse_result":
+                    reply = ModelReply(
+                        **await asyncio.to_thread(journal.result, record["id"])
+                    )
+                    # Output and fee evidence are independent. A crash can leave
+                    # full output confirmed but its reservation not yet settled.
+                    receipt = await asyncio.to_thread(
+                        self.platform.billing.settle,
+                        run["tenant_id"],
+                        record["call_id"],
+                        reply.input_tokens,
+                        reply.output_tokens,
+                        None,
+                        reply.raw_usage,
+                    )
+                    await asyncio.to_thread(sync_call_receipt, self.platform, receipt)
+                    await asyncio.to_thread(self.event, run, "model.restored", {
+                        "call_id": record["call_id"], "content": reply.content,
+                    })
+                    return reply
+                if action != "dispatch":
+                    raise PlatformError(
+                        409,
+                        "model_output_unknown",
+                        "模型请求可能已执行，缺少完整输出证据，不能重发。",
+                    )
+            return await self._invoke(
+                run, messages, tools, journal=journal, record=record
+            )
 
     async def _invoke(
-        self, run: dict, messages: list[dict], tools: list[dict]
+        self,
+        run: dict,
+        messages: list[dict],
+        tools: list[dict],
+        *,
+        journal=None,
+        record=None,
     ) -> ModelReply:
-        call_id = uid()
-        attempt_id = uid()
+        call_id = record["call_id"] if record else uid()
+        attempt_id = record["attempt_id"] if record else uid()
         model = run["spec"]["model"]
         max_tokens = run["spec"]["max_tokens"]
         # Conservative UTF-8 byte bound, plus protocol framing. No cache discount
@@ -488,7 +559,9 @@ class InvocationService:
             Decimal(model["input_price"]) * estimate
             + Decimal(model["output_price"]) * max_tokens
         ) / Decimal(1000000)
-        await asyncio.to_thread(self.register_call, run, call_id)
+        await asyncio.to_thread(
+            self.register_call, run, call_id, resume=record is not None
+        )
         billing = BillingService(
             self.db,
             self.settings.redis_url,
@@ -501,27 +574,55 @@ class InvocationService:
         receipt = None
         reply = None
         try:
+            if record:
+                with self.db.read() as connection:
+                    existing = (
+                        connection.execute(
+                            select(reservations_table).where(
+                                reservations_table.c.tenant_id == run["tenant_id"],
+                                reservations_table.c.call_id == call_id,
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                if existing:
+                    if (
+                        existing["status"] != "reserved"
+                        or existing["run_id"] != run["id"]
+                    ):
+                        raise PlatformError(
+                            409,
+                            "reservation_resume_conflict",
+                            "预占证据不允许继续发送。",
+                        )
+                    receipt, reserved = dict(existing), True
             # Shield transaction completion so cancellation cannot orphan a newly
             # committed reservation whose result the coroutine never received.
-            reservation_task = asyncio.create_task(
-                asyncio.to_thread(
-                    billing.reserve,
-                    run["tenant_id"],
-                    run["user_id"],
-                    model["id"],
-                    run["id"],
-                    call_id,
-                    estimate,
-                    max_tokens,
-                    model["input_price"],
-                    model["output_price"],
-                    deployment_id=run["spec"].get("deployment_id"),
-                    require_cost_policy=self.settings.mode == "saas",
+            reservation_task = (
+                None
+                if reserved
+                else asyncio.create_task(
+                    asyncio.to_thread(
+                        billing.reserve,
+                        run["tenant_id"],
+                        run["user_id"],
+                        model["id"],
+                        run["id"],
+                        call_id,
+                        estimate,
+                        max_tokens,
+                        model["input_price"],
+                        model["output_price"],
+                        deployment_id=run["spec"].get("deployment_id"),
+                        require_cost_policy=self.settings.mode == "saas",
+                    )
                 )
             )
             try:
-                receipt = await asyncio.shield(reservation_task)
-                reserved = True
+                if reservation_task:
+                    receipt = await asyncio.shield(reservation_task)
+                    reserved = True
             except asyncio.CancelledError:
                 receipt = await reservation_task
                 reserved = True
@@ -529,6 +630,12 @@ class InvocationService:
             if await asyncio.to_thread(self.is_cancelled, run):
                 raise RunCancelled()
             inference, routing = await asyncio.to_thread(self._resolve_inference, run)
+            if record:
+                record = await asyncio.to_thread(
+                    journal.mark_sent,
+                    record["id"],
+                    expected_revision=record["revision"],
+                )
             await asyncio.to_thread(
                 self._record_attempt, run, call_id, routing, attempt_id
             )
@@ -613,6 +720,13 @@ class InvocationService:
                     "logical_call_id": call_id,
                 },
             )
+            if record:
+                record = await asyncio.to_thread(
+                    journal.confirm,
+                    record["id"],
+                    asdict(reply),
+                    expected_revision=record["revision"],
+                )
             # Settlement does not depend on current user permissions: a revoked
             # account must still pay for usage already produced upstream.
             settlement = asyncio.create_task(
@@ -654,6 +768,18 @@ class InvocationService:
             )
             return reply
         except BaseException as exc:
+            if record and record["state"] in {"prepared", "sent"}:
+                # Lost authority may prevent this marker. Durable sent alone is
+                # already enough to prohibit replay, even when cleanup fails.
+                with suppress(PlatformError, TimeoutError):
+                    operation = (
+                        journal.reject
+                        if record["state"] == "prepared"
+                        else journal.mark_unknown
+                    )
+                    await asyncio.to_thread(
+                        operation, record["id"], expected_revision=record["revision"]
+                    )
             if isinstance(exc, GatewayError) and not exc.request_sent:
                 sent = False
             if reserved:

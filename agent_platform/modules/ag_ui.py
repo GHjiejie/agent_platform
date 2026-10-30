@@ -293,6 +293,29 @@ class Projection:
         kind, data = row["type"], row["data"]
         events: list[BaseEvent] = []
         identifier = data.get("execution_id")
+        if identifier and kind == "model.restored":
+            child = self.child(identifier)
+            child.call_id = data["call_id"]
+            events = child.close_text() + child.close_reasoning("interrupted")
+            for event in events:
+                event.subagent_run_id = identifier
+            message_id = f"assistant:{child.run['id']}:{data['call_id']}"
+            existing = next(
+                (message for message in child.messages if message["id"] == message_id),
+                None,
+            )
+            if existing:
+                existing["content"] = data["content"]
+            else:
+                child.messages.append(
+                    {"id": message_id, "role": "assistant", "content": data["content"]}
+                )
+            # Replace the full UI snapshot: streamed fragments may already exist,
+            # so appending the recovered full output would duplicate text.
+            events.append(
+                MessagesSnapshotEvent(messages=[*self.messages, *self.child_messages()])
+            )
+            return events
         if identifier and kind not in {
             "execution.started",
             "execution.finished",
@@ -373,7 +396,7 @@ class Projection:
             events.append(self.state())
         elif kind == "run.queued":
             events = [CustomEvent(name="platform.queued", value={"status": "queued"})]
-        elif kind in {"run.started", "run.cancelling"}:
+        elif kind in {"run.started", "run.cancelling", "run.recovering"}:
             self.run = {**self.run, "status": data.get("status", "running")}
             events = [self.state()]
         elif kind == "step.started":
@@ -448,7 +471,9 @@ class Projection:
             )
         elif kind == "tool.finished":
             output = {
-                key: value for key, value in data.items() if key not in {"id", "name"}
+                key: value
+                for key, value in data.items()
+                if key not in {"id", "name", "_operation_key"}
             }
             tool_id = f"{self.run['id']}:{self.call_id}:{data['id']}"
             events = [

@@ -205,6 +205,27 @@
         },
         "collaborationEnabled": {
           "type": "boolean"
+        },
+        "collaborationDynamicEnabled": {
+          "type": "boolean"
+        },
+        "collaborationParallelEnabled": {
+          "type": "boolean"
+        },
+        "collaborationMaxActiveMembers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "collaborationCapacityWaitSeconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "collaborationDurableEnabled": {
+          "type": "boolean"
+        },
+        "collaborationRecoveryEnabled": {
+          "type": "boolean"
         }
       },
       "required": [

@@ -1045,12 +1045,42 @@ class Platform:
                 from agent_platform.modules.collaboration.team import freeze_team
 
                 team = freeze_team(self, connection, user, spec)
+                if (
+                    team["definition"]["planning"] == "dynamic"
+                    and not self.settings.collaboration_dynamic_enabled
+                ):
+                    raise PlatformError(
+                        409, "dynamic_planning_disabled", "动态协作规划尚未开放。"
+                    )
+                team["features"] = {
+                    "dynamic": self.settings.collaboration_dynamic_enabled,
+                    "parallel": self.settings.collaboration_parallel_enabled,
+                    "durable": self.settings.collaboration_durable_enabled,
+                    "recovery": self.settings.collaboration_durable_enabled
+                    and self.settings.collaboration_recovery_enabled,
+                }
+                if (
+                    team["features"]["durable"]
+                    and not self.settings.secret_encryption_key
+                ):
+                    raise PlatformError(
+                        409, "journal_key_missing", "持久执行日志需要配置加密密钥。"
+                    )
+                if (
+                    team["definition"]["max_parallel"] > 1
+                    and not self.settings.collaboration_parallel_enabled
+                ):
+                    raise PlatformError(
+                        409, "parallel_execution_disabled", "成员并行执行尚未开放。"
+                    )
                 for member in team["members"].values():
                     member["spec"] = self.freeze_execution_spec(
                         connection, user, member["spec"]
                     )
                 spec["team_snapshot"] = team
-                spec["snapshot_schema_version"] = 3
+                spec["snapshot_schema_version"] = (
+                    4 if team["features"]["durable"] else 3
+                )
             if ag_ui is not None:
                 # Only the API's validated protocol correlation belongs here;
                 # client state, tools and prompts never enter the frozen spec.
@@ -1191,7 +1221,11 @@ class Platform:
             self.require_current(connection, user)
             run = self.owned(connection, t.runs, user, run_id, own=True)
             if run["status"] not in TERMINAL_STATUSES:
-                status = "cancelled" if run["status"] == "queued" else "cancelling"
+                status = (
+                    "cancelled"
+                    if run["status"] == "queued" and not run.get("recovery_count")
+                    else "cancelling"
+                )
                 changes = {"cancel_requested": True, "status": status}
                 if status == "cancelled":
                     changes["finished_at"] = now()

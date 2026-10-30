@@ -12,5 +12,11 @@ data:
   PLATFORM_LITELLM_URL: {{ .Values.config.litellmUrl | quote }}
   PLATFORM_LITELLM_ADMIN_URL: {{ .Values.config.litellmAdminUrl | quote }}
   PLATFORM_COLLABORATION_ENABLED: {{ .Values.config.collaborationEnabled | quote }}
+  PLATFORM_COLLABORATION_DYNAMIC_ENABLED: {{ .Values.config.collaborationDynamicEnabled | quote }}
+  PLATFORM_COLLABORATION_PARALLEL_ENABLED: {{ .Values.config.collaborationParallelEnabled | quote }}
+  PLATFORM_COLLABORATION_DURABLE_ENABLED: {{ .Values.config.collaborationDurableEnabled | quote }}
+  PLATFORM_COLLABORATION_RECOVERY_ENABLED: {{ .Values.config.collaborationRecoveryEnabled | quote }}
+  PLATFORM_COLLABORATION_MAX_ACTIVE_MEMBERS: {{ .Values.config.collaborationMaxActiveMembers | quote }}
+  PLATFORM_COLLABORATION_CAPACITY_WAIT_SECONDS: {{ .Values.config.collaborationCapacityWaitSeconds | quote }}
   PLATFORM_MAX_RUN_COST: {{ .Values.config.maxRunCost | quote }}
   PLATFORM_EXPORT_DIRECTORY: {{ .Values.exports.mountPath | quote }}

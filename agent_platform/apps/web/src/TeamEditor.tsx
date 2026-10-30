@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { api } from "./api";
 import { Button, Field, Select, useResource } from "./components";
-import type { DiscoveryCandidate, DiscoveryResponse, TaskContract, TeamSpec, TaskTemplate } from "./api-contract.generated";
+import type { CollaborationSettingsResponse, DiscoveryCandidate, DiscoveryResponse, TaskContract, TeamSpec, TaskTemplate } from "./api-contract.generated";
 
 export const textContract = { name: "request", version: 1, json_schema: { type: "string", maxLength: 32000 } };
 export const dataContract = { name: "observations", version: 1, json_schema: {
@@ -11,6 +11,7 @@ export const memberContracts: TaskContract[] = [{ task_type: "normalize", input:
 
 export function TeamEditor({ value, onChange }: { value: TeamSpec; onChange: (value: TeamSpec) => void }) {
   const discovery = useResource<DiscoveryResponse>("/agents/discovery");
+  const settings = useResource<CollaborationSettingsResponse>("/agents/collaboration-settings");
   const [more, setMore] = useState<DiscoveryCandidate[]>([]);
   const [cursor, setCursor] = useState<string | null | undefined>(undefined);
   const [loading, setLoading] = useState(false);
@@ -19,7 +20,8 @@ export function TeamEditor({ value, onChange }: { value: TeamSpec; onChange: (va
   const nextCursor = cursor === undefined ? discovery.data?.next_cursor : cursor;
   const tasks = value.tasks ?? [];
   function updateTask(key: string, patch: Partial<TaskTemplate>) {
-    onChange({ ...value, tasks: tasks.map((task) => task.key === key ? { ...task, ...patch } : task) });
+    const memberKey = tasks.find((task) => task.key === key)?.member_key;
+    onChange({ ...value, members: value.members.map((member) => member.key === memberKey && patch.objective !== undefined ? { ...member, responsibility: patch.objective } : member), tasks: tasks.map((task) => task.key === key ? { ...task, ...patch } : task) });
   }
   function assign(task: TaskTemplate, id: string) {
     const candidate = candidates.find((item) => `${item.id}:${item.version}` === id);
@@ -34,7 +36,18 @@ export function TeamEditor({ value, onChange }: { value: TeamSpec; onChange: (va
   }
   return <fieldset className="agent-execution-policy">
     <legend>团队任务</legend>
-    <p className="muted">选择同组织已发布的成员，固定版本后按前置关系顺序执行。成员输出通过校验后才传给后继；团队系统指令用于最终汇总。</p>
+    <p className="muted">选择同组织已发布的成员并固定版本。成员输出通过校验后才传给后继；团队系统指令用于规划与最终汇总。</p>
+    {settings.loading && !settings.data && <p role="status">正在读取协作能力…</p>}
+    {settings.error && <p role="alert">{settings.error}<Button type="button" variant="ghost" onClick={() => void settings.reload()}>重试读取协作能力</Button></p>}
+    <div className="form-columns">
+      <Field label="规划方式" hint={settings.data?.features?.dynamic ? "动态规划只能使用已固定成员及其任务接口，不会扩大预算。" : "动态规划尚未开放，已有配置会保留。"}><Select value={value.planning ?? "template"} onChange={(event) => onChange({ ...value, planning: event.target.value === "dynamic" ? "dynamic" : "template" })}>
+        <option value="template">固定任务模板</option><option value="dynamic" disabled={!settings.data?.features?.dynamic}>按请求动态规划</option>
+      </Select></Field>
+      <Field label="同时执行的任务数" hint={settings.data?.features?.parallel ? "无依赖的任务可同时执行，仍共享团队预算。" : "并行执行尚未开放。"}><Select value={String(value.max_parallel ?? 1)} onChange={(event) => onChange({ ...value, max_parallel: Number(event.target.value) })}>
+        <option value="1">1 个（顺序执行）</option><option value="2" disabled={!settings.data?.features?.parallel}>最多 2 个</option>
+      </Select></Field>
+    </div>
+    {value.planning === "dynamic" && <p className="muted">下方目标用于配置候选成员的职责。实际任务和依赖会按每次请求重新生成，可能与预设不同；任务数量受上限约束。</p>}
     {discovery.loading && !discovery.data && <p role="status">正在发现可用成员…</p>}
     {discovery.error && <p role="alert">{discovery.error}<Button type="button" variant="ghost" onClick={() => void discovery.reload()}>重试发现</Button></p>}
     {!discovery.loading && !candidates.length && <p>还没有声明任务接口的已发布成员。请先创建单 Agent，配置“协作能力”并发布，或安装顺序模板。</p>}
@@ -74,9 +87,10 @@ export function TeamEditor({ value, onChange }: { value: TeamSpec; onChange: (va
     }}>加载更多成员</Button>}
     {error && <p role="alert">{error}</p>}
     <div className="form-columns">
-      <Field label="团队模型调用总次数" hint="包括成员、修复和最终汇总，至少为汇总留一次。"><input type="number" required min={2} max={50} value={value.max_model_calls ?? 20} onChange={(event) => onChange({ ...value, max_model_calls: Number(event.target.value) })} /></Field>
+      <Field label="团队模型调用总次数" hint="包括规划、成员、修复和最终汇总，至少为汇总留一次。"><input type="number" required min={2} max={50} value={value.max_model_calls ?? 20} onChange={(event) => onChange({ ...value, max_model_calls: Number(event.target.value) })} /></Field>
       <Field label="汇总费用预留比例" hint="成员不能消耗这部分主运行预算。"><input type="number" required min={0.05} max={0.5} step={0.05} value={value.summary_reserve_fraction ?? 0.15} onChange={(event) => onChange({ ...value, summary_reserve_fraction: Number(event.target.value) })} /></Field>
     </div>
+    <Field label="任务数量上限" hint="动态规划和固定模板都不能超过此数量。"><input type="number" required min={Math.max(1, tasks.length)} max={8} value={value.max_tasks ?? 8} onChange={(event) => onChange({ ...value, max_tasks: Number(event.target.value) })} /></Field>
     <label className="team-dependencies"><input type="checkbox" checked={value.allow_partial ?? false} onChange={(event) => onChange({ ...value, allow_partial: event.target.checked })} />可选任务失败时允许部分交付</label>
   </fieldset>;
 }

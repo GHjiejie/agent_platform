@@ -529,7 +529,19 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "context_window": settings.default_context_window,
         }
 
-    @app.get("/api/v1/agents/collaboration-settings")
+    def collaboration_features():
+        return {
+            "dynamic": platform.settings.collaboration_dynamic_enabled,
+            "parallel": platform.settings.collaboration_parallel_enabled,
+            "durable": platform.settings.collaboration_durable_enabled,
+            "recovery": platform.settings.collaboration_durable_enabled
+            and platform.settings.collaboration_recovery_enabled,
+        }
+
+    @app.get(
+        "/api/v1/agents/collaboration-settings",
+        response_model=r.CollaborationSettingsResponse,
+    )
     def collaboration_settings(user=Depends(auth)):
         from agent_platform.infrastructure import tenancy_tables as nt
 
@@ -547,9 +559,13 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "enabled": row["collaboration_enabled"],
             "version": row["version"],
             "platform_enabled": settings.collaboration_enabled,
+            "features": collaboration_features(),
         }
 
-    @app.patch("/api/v1/agents/collaboration-settings")
+    @app.patch(
+        "/api/v1/agents/collaboration-settings",
+        response_model=r.CollaborationSettingsResponse,
+    )
     def update_collaboration_settings(
         body: s.CollaborationSettings, user=Depends(admin)
     ):
@@ -578,6 +594,7 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "enabled": body.enabled,
             "version": body.expected_version + 1,
             "platform_enabled": settings.collaboration_enabled,
+            "features": collaboration_features(),
         }
 
     @app.get("/api/v1/agents/discovery", response_model=r.DiscoveryResponse)

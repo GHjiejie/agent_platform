@@ -34,8 +34,10 @@ from sqlalchemy import (
     update,
 )
 
+from agent_platform.infrastructure import checkpoint_tables as cpt
 from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import gateway_tables as gt
+from agent_platform.infrastructure import journal_tables as jt
 from agent_platform.infrastructure import operations_tables as ot
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
@@ -1000,6 +1002,8 @@ class OperationsService:
             nt.invitations,
             reservations_table,
             *ct.COLLABORATION_TABLES,
+            *jt.JOURNAL_TABLES,
+            *cpt.CHECKPOINT_TABLES,
         )
         if phase == 0:
             self._expire_exports(tenant_id, all_jobs=True)
@@ -1110,6 +1114,15 @@ class OperationsService:
                             }
                         elif table is ct.artifacts:
                             values = {"content": {"content_deleted": True}}
+                        elif table is jt.journal:
+                            values = {
+                                "request_ciphertext": "",
+                                "result_ciphertext": None,
+                                "request_digest": "",
+                                "result_digest": None,
+                            }
+                        elif table in cpt.CHECKPOINT_TABLES:
+                            values = {"payload_ciphertext": "", "payload_digest": ""}
                         elif table is t.agents:
                             values = {
                                 "capability_keys": [],

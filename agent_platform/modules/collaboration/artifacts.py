@@ -24,7 +24,7 @@ def parse_result(text, contract):
         ) from None
 
 
-def save(connection, run, execution_id, kind, content, *, version=1):
+def save(connection, run, execution_id, kind, content, *, version=1, source_key=None):
     row = {
         "id": uid(),
         "tenant_id": run["tenant_id"],
@@ -35,6 +35,7 @@ def save(connection, run, execution_id, kind, content, *, version=1):
         "content": content,
         "digest": canonical_digest(content),
         "validation_status": "validated",
+        "source_key": source_key,
         "created_at": now(),
     }
     connection.execute(insert(ct.artifacts).values(**row))

@@ -63,6 +63,8 @@ class Database:
             "gateway_tables",
             "runtime_tables",
             "collaboration_tables",
+            "journal_tables",
+            "checkpoint_tables",
             "operations_tables",
             "support_tables",
             "metering_tables",
@@ -127,6 +129,8 @@ class Database:
                     "gateway_tables",
                     "runtime_tables",
                     "collaboration_tables",
+                    "journal_tables",
+                    "checkpoint_tables",
                     "operations_tables",
                     "metering_tables",
                 ):

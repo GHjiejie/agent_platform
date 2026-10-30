@@ -14,10 +14,10 @@ const task = { id: "task1", logical_key: "normalize", member_key: "m", agent_id:
 const execution = { id: "exec1", task_id: "task1", attempt: 1, role: "member", agent_id: "member", agent_version: 1, name: "整理成员", model_alias: "offline-model", status: "succeeded", output: { facts: ["已提供数据"] }, error: "", input_digest: "input-proof", input_summary: "只接收已分配的数据", created_at: created, finished_at: created, fees };
 const detail = { run_id: run.id, status: "succeeded", enabled: true, outcome: "partial", tasks: [task], executions: [execution, { ...execution, id: "summary", task_id: null, role: "summary", name: "研究团队", output: "统一答案" }], artifacts: [{ id: "artifact1", execution_id: "exec1", version: 1, kind: "task_result", content: execution.output, digest: "source-proof", validation_status: "validated" }], fees, max_cost: "1" };
 
-async function teamFixture(page: Page, failedChart = false) {
+async function teamFixture(page: Page, failedChart = false, advancedModes = false) {
   const mock = await fixture(page);
   let completed = failedChart;
-  let settings = { enabled: false, version: 1, platform_enabled: true };
+  let settings = { enabled: false, version: 1, platform_enabled: true, features: { dynamic: advancedModes, parallel: advancedModes, durable: advancedModes, recovery: advancedModes } };
   const ui = { validated: true, generating: false, htmlComplete: true, cssComplete: true, jsFunctionsComplete: true, jsExpressionsComplete: true, initialHeight: 180, placeholderMessages: [], html: ['<button id="add">增加</button><output id="count">0</output>'], css: "body{padding:16px}", jsFunctions: "", jsExpressions: ["let n=0;document.querySelector('#add').addEventListener('click',()=>{document.querySelector('#count').textContent=String(++n)})"] };
   await page.route("**/api/**", async (route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
@@ -77,6 +77,37 @@ test("发现成员、配置团队、保存发布与安装模板", async ({ page 
   await page.getByRole("button", { name: "安装顺序模板", exact: true }).click();
   await expect(page.getByText("顺序模板已安装并发布，可以在 Agent 列表中编辑或运行。", { exact: true })).toBeVisible();
   expect(mock.errors).toEqual([]);
+});
+
+test("配置动态规划和双任务并行并保留固定成员版本", async ({ page }, testInfo) => {
+  const mock = await teamFixture(page, false, true);
+  await page.goto("/#agents?tenant=team-a");
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page.getByRole("combobox", { name: "规划方式", exact: true }).click();
+  await page.getByRole("option", { name: "按请求动态规划", exact: true }).click();
+  await page.getByRole("combobox", { name: "同时执行的任务数", exact: true }).click();
+  await page.getByRole("option", { name: "最多 2 个", exact: true }).click();
+  await page.getByRole("spinbutton", { name: "任务数量上限", exact: true }).fill("4");
+  await expect(page.getByText("下方目标用于配置候选成员的职责。", { exact: false })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("dynamic-team-desktop.png"), fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("combobox", { name: "规划方式", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("dynamic-team-mobile.png"), fullPage: true });
+  await page.getByRole("button", { name: "保存草稿", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const saved = mock.writes.find((item) => item.path.endsWith("/agents/team"));
+  expect(saved?.body.collaboration_spec).toMatchObject({ planning: "dynamic", max_parallel: 2, max_tasks: 4, members: expect.arrayContaining([expect.objectContaining({ agent_id: "member", version: 1 })]) });
+  expect(mock.errors).toEqual([]);
+});
+
+test("平台关闭高级协作时显示原因并禁用新选择", async ({ page }) => {
+  await teamFixture(page);
+  await page.goto("/#agents?tenant=team-a");
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(page.getByText("动态规划尚未开放，已有配置会保留。", { exact: true })).toBeVisible();
+  await page.getByRole("combobox", { name: "规划方式", exact: true }).click();
+  await expect(page.getByRole("option", { name: "按请求动态规划", exact: true })).toBeDisabled();
 });
 
 test("成员错误不会终止主流，主对话只显示统一答案并可追溯费用", async ({ page }) => {

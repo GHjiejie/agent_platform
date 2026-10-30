@@ -108,6 +108,18 @@ class ComposeStoragePermissionsTests(unittest.TestCase):
         for role, grants in collaboration.COLLABORATION_PRIVILEGES.items():
             for table in collaboration.COLLABORATION_TABLES:
                 expected[role][table.name] = grants
+        journal = import_module(
+            "agent_platform.migrations.versions.0014_execution_journal"
+        )
+        for role, grants in journal.JOURNAL_PRIVILEGES.items():
+            for table in journal.JOURNAL_TABLES:
+                expected[role][table.name] = grants
+        checkpoint = import_module(
+            "agent_platform.migrations.versions.0015_execution_checkpoints"
+        )
+        for role, grants in checkpoint.CHECKPOINT_PRIVILEGES.items():
+            for table in checkpoint.CHECKPOINT_TABLES:
+                expected[role][table.name] = grants
         self.assertEqual(expected, ROLE_PRIVILEGES)
 
 

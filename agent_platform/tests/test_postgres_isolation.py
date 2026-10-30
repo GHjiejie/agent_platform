@@ -290,6 +290,12 @@ class PostgreSQLIsolationTests(unittest.TestCase):
                 self.assertEqual(connection.execute(select(table)).all(), [])
 
     def test_sequential_team_executes_with_deployed_service_roles(self):
+        self._team_with_service_roles(durable=False)
+
+    def test_durable_team_journal_uses_worker_only_permissions_and_rls(self):
+        self._team_with_service_roles(durable=True)
+
+    def _team_with_service_roles(self, *, durable):
         from sqlalchemy import update
 
         from agent_platform.infrastructure import tenancy_tables as nt
@@ -304,6 +310,7 @@ class PostgreSQLIsolationTests(unittest.TestCase):
         settings = replace(
             self.platform.settings,
             collaboration_enabled=True,
+            collaboration_durable_enabled=durable,
             litellm_url=control.url,
             gateway_control_url=control.url,
             gateway_control_key="temporary-acceptance-control-key",
@@ -383,6 +390,24 @@ class PostgreSQLIsolationTests(unittest.TestCase):
         self.assertEqual(len(result["artifacts"]), 4)
         self.assertEqual(len(gateway.calls), 5)
         self.assertGreater(Decimal(result["fees"]["confirmed"]), 0)
+        from agent_platform.infrastructure.journal_tables import journal
+
+        with worker_db.tenant_scope(self.tenant_a), worker_db.read() as connection:
+            records = connection.execute(select(journal)).mappings().all()
+        self.assertEqual(len(records), 6 if durable else 0)
+        if durable:
+            self.assertEqual({record["state"] for record in records}, {"confirmed"})
+            self.assertEqual({record["kind"] for record in records}, {"tool", "model"})
+            with worker_db.tenant_scope(self.tenant_b), worker_db.read() as connection:
+                self.assertEqual(connection.execute(select(journal)).all(), [])
+            for service in ("api", "gateway-sync"):
+                restricted = self.sandbox.database(self.sandbox.runtime_urls[service])
+                with (
+                    restricted.tenant_scope(self.tenant_a),
+                    self.assertRaises(DBAPIError),
+                    restricted.read() as connection,
+                ):
+                    connection.execute(select(journal))
 
     def test_all_services_are_non_owner_and_all_tenant_tables_force_rls(self):
         for service, url in self.sandbox.runtime_urls.items():
