@@ -12,6 +12,8 @@ container, validating real bootstrap credentials and frozen migration grants.
 """
 
 import asyncio
+import csv
+import io
 import os
 import re
 import secrets
@@ -556,6 +558,33 @@ class PostgreSQLIsolationTests(unittest.TestCase):
                 self.assertEqual(
                     Decimal(dashboard["cost"]), Decimal(result["fees"]["confirmed"])
                 )
+                api_exports = OperationsService(platform)
+                export = api_exports.request_export(
+                    self.fixture.owner, kind="calls", idempotency_key=uuid4().hex
+                )
+            maintenance_db = self.sandbox.database(
+                self.sandbox.runtime_urls["maintenance"]
+            )
+            maintenance = OperationsService(
+                maintenance_services(maintenance_db, settings)
+            )
+            outcome = maintenance.process_batch()
+            self.assertEqual(outcome["errors"], 0)
+            self.assertEqual(outcome["exports"], 1)
+            with self.db.tenant_scope(self.tenant_a):
+                content = b"".join(
+                    api_exports.download(self.fixture.owner, export["id"])["chunks"]
+                ).decode()
+                exported = list(csv.DictReader(io.StringIO(content)))
+                self.assertEqual(
+                    {row["id"] for row in exported}, {row["id"] for row in usage}
+                )
+                self.assertEqual(
+                    sum(Decimal(row["cost"]) for row in exported),
+                    Decimal(result["fees"]["confirmed"]),
+                )
+                self.assertNotIn("temporary-remote", content)
+                self.assertNotIn("remote.example.test", content)
             with worker_db.tenant_scope(self.tenant_b), worker_db.read() as conn:
                 self.assertEqual(conn.execute(select(calls)).all(), [])
 

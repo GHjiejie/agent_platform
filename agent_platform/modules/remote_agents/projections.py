@@ -1,6 +1,6 @@
 """A public union of model and remote calls; endpoint/credential/journal data stay private."""
 
-from sqlalchemy import and_, cast, literal, select
+from sqlalchemy import and_, cast, func, literal, select
 
 from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import tables as t
@@ -18,7 +18,9 @@ def call_projection():
         "model": literal("Remote Agent"),
         "task_id": calls.c.task_id,
         "execution_id": calls.c.execution_id,
-        "agent_name": ct.executions.c.spec["name"].as_string(),
+        "agent_name": func.coalesce(
+            ct.executions.c.spec["name"].as_string(), literal("[已删除]")
+        ),
         "user_email": literal(""),
         "status": calls.c.status,
         "input_tokens": literal(0),

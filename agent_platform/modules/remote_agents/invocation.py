@@ -139,6 +139,11 @@ class RemoteInvocation:
 
     def _admission(self, conn, record, intent):
         self.journal.guard(conn)
+        current = self.journal._record(conn, record["id"])
+        if current["state"] != "prepared":
+            raise PlatformError(
+                409, "remote_not_dispatchable", "远程请求已发送或终止，不能新增预占。"
+            )
         self._point(conn, intent, sending=True)
         previous = (
             conn.execute(
@@ -267,12 +272,8 @@ class RemoteInvocation:
                 .values(poll_count=row["poll_count"] + 1)
             )
 
-    def accept(self, record, payload, contract):
-        status = RemoteStatus.model_validate(payload)
-        if status.request_id != record["call_id"]:
-            raise PlatformError(
-                409, "remote_response_mismatch", "远程响应不属于当前请求。"
-            )
+    def settle_fee(self, record, status):
+        """Fee conflicts cannot invalidate independently verified output evidence."""
         if status.fee is not None:
             try:
                 receipt = self.platform.billing.settle_fixed(
@@ -283,6 +284,14 @@ class RemoteInvocation:
                 if exc.code != "settlement_conflict":
                     raise
                 # Fee conflicts keep holds; valid output is evaluated independently.
+
+    def accept(self, record, payload, contract):
+        status = RemoteStatus.model_validate(payload)
+        if status.request_id != record["call_id"]:
+            raise PlatformError(
+                409, "remote_response_mismatch", "远程响应不属于当前请求。"
+            )
+        self.settle_fee(record, status)
         with self.journal.transaction() as conn:
             conn.execute(
                 update(calls)
@@ -345,14 +354,7 @@ class RemoteInvocation:
                     raise PlatformError(
                         409, "remote_output_missing", "远程结果证据不完整。"
                     )
-                if status.fee:
-                    receipt = await asyncio.to_thread(
-                        self.platform.billing.settle_fixed,
-                        self.context.tenant_id,
-                        record["call_id"],
-                        status.fee.model_dump(),
-                    )
-                    await asyncio.to_thread(sync_call_receipt, self.platform, receipt)
+                await asyncio.to_thread(self.settle_fee, record, status)
                 validate_value(contract.json_schema, status.result.value)
                 return status.result.value
             if record["state"] == "rejected":

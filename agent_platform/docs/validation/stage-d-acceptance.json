@@ -1,0 +1,14 @@
+{
+  "checked_at": "2026-10-30T13:09:32.816280+00:00",
+  "mode": "all",
+  "runtime_role": "api",
+  "passed": true,
+  "release_gate_passed": true,
+  "postgres_verified": true,
+  "role_bootstrap_verified": true,
+  "redis_verified": true,
+  "tests_run": 548,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0
+}

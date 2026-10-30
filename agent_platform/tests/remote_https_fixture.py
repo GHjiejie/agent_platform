@@ -63,6 +63,8 @@ def https_peer():
             "submissions": [],
             "sni": [],
             "lose_post": True,
+            "status_hook": None,
+            "cancelled": False,
         }
         server_context.set_servername_callback(
             lambda sock, hostname, context: state["sni"].append(hostname)
@@ -83,7 +85,7 @@ def https_peer():
             def status(self):
                 request = state["submissions"][-1]
                 value = {"value": "from HTTPS peer"}
-                return {
+                payload = {
                     "request_id": request["request_id"],
                     "state": "succeeded",
                     "result": {"value": value, "digest": canonical_digest(value)},
@@ -95,6 +97,13 @@ def https_peer():
                         "final": True,
                     },
                 }
+                if state["cancelled"]:
+                    payload.pop("result")
+                    payload["state"] = "cancelled"
+                    return payload
+                return (
+                    state["status_hook"](payload) if state["status_hook"] else payload
+                )
 
             def do_GET(self):
                 state["requests"].append(("GET", self.path))
@@ -123,16 +132,29 @@ def https_peer():
 
             def do_POST(self):
                 state["requests"].append(("POST", self.path))
-                if self.headers.get(
-                    "Authorization"
-                ) != "Bearer temporary-remote-test-secret" or not self.path.endswith(
-                    "/tasks"
+                if (
+                    self.headers.get("Authorization")
+                    != "Bearer temporary-remote-test-secret"
                 ):
                     self.send_error(403)
                     return
                 request = json.loads(
                     self.rfile.read(int(self.headers["Content-Length"]))
                 )
+                if state["submissions"] and self.path.endswith(
+                    "/tasks/" + state["submissions"][-1]["request_id"] + "/cancel"
+                ):
+                    if request != {
+                        "request_id": state["submissions"][-1]["request_id"]
+                    }:
+                        self.send_error(400)
+                        return
+                    state["cancelled"] = True
+                    self.answer(self.status())
+                    return
+                if not self.path.endswith("/tasks"):
+                    self.send_error(404)
+                    return
                 state["submissions"].append(request)
                 if state["lose_post"]:
                     state["lose_post"] = False

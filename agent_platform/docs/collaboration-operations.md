@@ -137,3 +137,38 @@ python -m unittest agent_platform.tests.test_distributed_collaboration -v
 ```
 
 测试包括不同 Worker 的任务领取、重复领取竞争、双 Worker 真正重叠执行、共享最后预算、根与任务 fence 撤销、取消、容量等待、接管上限和停机排空。独立子进程在发送前、发送后、响应确认后及任务确认后退出，验证跨进程恢复不会重发未知请求。PostgreSQL 验证使用 `test_distributed_team_uses_independent_worker_leases_and_rls`，执行过程中使用不同数据库连接及实际 Worker 服务角色。
+
+## 阶段 D2：远程成员接入与退场
+
+API、Worker 与维护服务须使用包含 `0019_remote_agent_calls` 的程序和权限矩阵；先由迁移身份完成 `0017_remote_agent_registry`、`0018_fixed_remote_charges`、`0019_remote_agent_calls`。远程团队使用快照版本 6，需开启持久日志并保留加密密钥；独立成员 Worker 另需开启 D1。远程协议、目标架构及费用人工处置接口见 [远程 Agent 接入契约](remote-agent-protocol.md)。
+
+`PLATFORM_REMOTE_AGENTS_ENABLED` 默认 `false`，`PLATFORM_REMOTE_AGENT_ALLOWED_ORIGINS` 默认 `[]`。API 与 Worker 配置必须一致；白名单采用 JSON 数组，例如 `["https://agents.example.org"]`，精确匹配 HTTPS 域名和端口。Compose、Kubernetes 和 Helm 均透传这两个配置，Helm 字段为 `config.remoteAgentsEnabled`、`config.remoteAgentAllowedOrigins`。不允许通过新增代理、关闭证书验证或放宽私网地址限制接入远程成员。
+
+接入顺序：
+
+1. 平台完成供应商成本预算，组织完成余额与额度配置。固定报价调用同时受钱包、组织/用户额度、平台成本预算、根/成员费用上限及团队调用次数约束。
+2. 组织管理员通过 `POST /api/v2/tenants/{tenant}/remote-agent-credentials` 创建凭据，再通过 `POST .../remote-agents` 提交不可变描述、端点与凭据引用。管理响应不回显密钥；调用只传分配给该成员的目标与显式输入。
+3. Worker 探测通过且健康 TTL 有效后，成员才进入发现候选。团队发布固定 Agent 版本；运行准入再冻结远程描述摘要、端点白名单与报价。端点、凭据或报价变更必须发布新的远程版本并重新发布团队。
+4. 首先在测试组织验证混合团队、错误输出、费用补证和取消，再依据 C5 效果评估决定开放范围。不能用注册成功或单次健康探测代替执行验收。
+
+远程执行和费用分别确认。有效输出可以解锁下游，费用缺失或报价冲突保留待确认预占；只有费用回执时不能确认成果。运行详情、任务费用、用量、统计和调用导出包含远程费用，Token 为零，不构造虚假模型用量。
+
+| 现场状态 | 处理方式 |
+| --- | --- |
+| 已准备但有持久证据证明未发送 | 允许原标识继续准入，或在任务终止后释放预占；已拒绝的意图不能晚到后新增预占 |
+| POST 结果未知，包括查询返回 `not_found` | 使用原端点、请求标识和截止时间查询，绝不自动重投或切换另一端点 |
+| 完整输出已写入日志，进程退出 | 当前租约持有者校验并复用输出；费用冲突不阻断独立的有效输出恢复 |
+| 成员或根运行结束，费用待核实 | 后台补证最多领取 12 次，每次后间隔至少 30 秒；超过上限转人工财务处置 |
+| 根取消或失败，远端可能仍执行 | 持久标记后尽力提交一次取消，继续有界查询费用；取消成功不等于零费用 |
+| 凭据撤销或白名单删除 | 不继续使用该访问权限；不替换成新版本凭据或端点，未结费用转人工核实 |
+| 内容保留期结束 | 清理敏感执行内容，保留必要账务；用量里的已清理成员名称显示为 `[已删除]` |
+
+执行中的查询累计最多 20 次，且受原截止时间限制；后台补证不写成果、不唤醒已结束的执行。关闭远程执行开关阻止后续远程提交，但后台补证仍运行，保留已有调用的财务核实能力。退场时先停止新准入，再排空或明确取消版本 6 的运行，处理待确认费用，最后撤销端点权限和凭据。不得直接回退到只认识版本 5 的 Worker，也不得通过删除账务或调用日志消除预占。
+
+专项命令：
+
+```bash
+python -m unittest agent_platform.tests.test_remote_agent_contracts agent_platform.tests.test_remote_agent_transport agent_platform.tests.test_remote_agent_registry agent_platform.tests.test_remote_agent_billing agent_platform.tests.test_remote_agent_execution -v
+```
+
+完整后端工程门禁使用 `python -m agent_platform.scripts.acceptance --mode all --report /tmp/stage-d-acceptance.json`。该命令要求显式隔离的 PostgreSQL 17、Redis、Docker 与 Helm，任何跳过都不算通过；配置要求以脚本开头说明为准。测试不读取部署数据库或真实模型凭据。真实 HTTPS 夹具只在测试内把 DNS 指向临时服务并信任临时证书，生产网络校验不变。该工程门禁不包含 C5 真实模型质量、成本及延迟评估。
