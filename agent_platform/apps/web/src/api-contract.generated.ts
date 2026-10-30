@@ -13,7 +13,12 @@ export type BudgetRebuildResponse = { "dimensions": number; "spent": string; "te
 export type CallResponse = { "agent_name": string; "cost": string; "created_at": string; "error": string; "finished_at": string | null; "id": string; "input_tokens": number; "model": string; "model_id": string; "output_tokens": number; "price_version": number; "provider_cost"?: string | null; "run_id": string; "status": string; "tenant_id": string; "usage_source": string; "user_email": string; "user_id": string; };
 export type CallsResponse = { "items": Array<CallResponse>; "next_cursor": string | null; };
 export type CloseRequest = { "reason": string; };
+export type CollaborationArtifact = { "content": unknown; "digest": string; "execution_id": string; "id": string; "kind": string; "validation_status": string; "version": number; };
+export type CollaborationDetail = { "artifacts": Array<CollaborationArtifact>; "enabled": boolean; "executions": Array<CollaborationExecution>; "fees": CollaborationFees; "max_cost": string | null; "outcome": string | null; "run_id": string; "status": string; "tasks": Array<CollaborationTask>; };
+export type CollaborationExecution = { "agent_id": string; "agent_version": number; "attempt": number; "created_at": string; "error": string; "fees": CollaborationFees; "finished_at": string | null; "id": string; "input_digest": string; "input_summary": string | null; "model_alias": string; "name": string; "output": unknown; "role": string; "status": string; "task_id": string | null; };
+export type CollaborationFees = { "confirmed": string; "pending": string; };
 export type CollaborationSettings = { "enabled": boolean; "expected_version": number; };
+export type CollaborationTask = { "agent_id": string; "agent_version": number; "dependencies": Array<string>; "error"?: string; "id": string; "logical_key": string; "member_key": string; "objective": string; "required": boolean; "status": string; "task_type": string; };
 export type Context = { "description": string; "value": string; };
 export type CostBudget = { "expected_version"?: number | null; "limit": string; };
 export type CostBudgetResponse = { "blocked": boolean; "limit": string; "reserved": string; "scope": string; "spent": string; "subject_id": string; "updated_at": string; "updated_by": string; "version": number; };
@@ -27,6 +32,8 @@ export type DataSource = { "mimeType": string; "type"?: "data"; "value": string;
 export type DeploymentCreate = { "base_url": string; "capabilities"?: Array<"chat" | "tools">; "gateway_id"?: "primary"; "internal_route": string; "name": string; };
 export type DeploymentPatch = { "base_url"?: string | null; "internal_route"?: string | null; "name"?: string | null; "status"?: "active" | "disabled" | null; };
 export type DeveloperMessage = { "content": string; "encryptedValue"?: string | null; "id": string; "metadata"?: Record<string, unknown> | null; "name"?: string | null; "role"?: "developer"; "subagentRunId"?: string | null; };
+export type DiscoveryCandidate = { "capability_keys": Array<string>; "contract_digests": Record<string, Record<string, string>>; "description": string; "id": string; "name": string; "task_contracts": Array<TaskContract>; "version": number; };
+export type DiscoveryResponse = { "items": Array<DiscoveryCandidate>; "next_cursor": string | null; };
 export type DocumentPart = { "id"?: string | null; "metadata"?: unknown | null; "source": DataSource | UrlSource | FileSource; "type"?: "document"; };
 export type EntitlementPatch = { "concurrent"?: number | null; "expected_version"?: number | null; "max_agents"?: number | null; "max_budget"?: string | null; "max_concurrent_runs"?: number | null; "max_export_jobs"?: number | null; "max_members"?: number | null; "max_queued_runs"?: number | null; "max_running_runs"?: number | null; "max_sse_connections"?: number | null; "rpm"?: number | null; "tpm"?: number | null; };
 export type ExecutionPolicy = { "max_cost"?: string | null; "max_output_recoveries"?: number; "max_total_tokens"?: number | null; "reasoning_effort"?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null; "timeout_seconds"?: number | null; };
@@ -60,7 +67,7 @@ export type ReasoningResponse = { "content": string; "created_at": string; "id":
 export type Reconcile = { "action": "confirm" | "write_off"; "input_tokens"?: number | null; "output_tokens"?: number | null; "reason": string; };
 export type ResumeEntry = { "interruptId": string; "metadata"?: Record<string, unknown> | null; "payload"?: unknown | null; "status": "resolved" | "cancelled"; };
 export type RunCreate = { "message": string; "model_id"?: string | null; "reasoning_effort"?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null; };
-export type RunResponse = { "agent_name": string; "cost"?: string; "created_at": string; "error": string; "finished_at": string | null; "id": string; "message"?: string; "model_alias": string | null; "model_id": string | null; "session_id": string; "status": string; "tenant_id": string; "user_id": string; };
+export type RunResponse = { "agent_name": string; "cost"?: string; "created_at": string; "error": string; "execution_mode"?: "single" | "team"; "finished_at": string | null; "id": string; "message"?: string; "model_alias": string | null; "model_id": string | null; "outcome"?: string | null; "session_id": string; "status": string; "tenant_id": string; "user_id": string; };
 export type RunsResponse = { "items": Array<RunResponse>; "next_cursor": string | null; };
 export type SessionCreate = { "agent_id": string; "title"?: string | null; };
 export type SessionDetailResponse = { "agent_id": string; "artifacts": Array<ArtifactResponse>; "created_at": string; "id": string; "messages": Array<MessageResponse>; "reasoning"?: Array<ReasoningResponse>; "runs": Array<RunResponse>; "tenant_id": string; "title": string; "user_id": string; };
@@ -90,12 +97,15 @@ export type VideoPart = { "id"?: string | null; "metadata"?: unknown | null; "so
 export type WalletResponse = { "available": string; "balance": string; "block_reason": string; "blocked": boolean; "currency": string; "reserved": string; };
 
 export type ApiResponseByOperation = {
+  "GET /api/v1/agents/discovery": DiscoveryResponse;
   "POST /api/v1/auth/login": AuthResponse;
   "GET /api/v1/auth/me": AuthResponse;
   "GET /api/v1/billing/wallet": WalletResponse;
   "GET /api/v1/runs": RunsResponse;
   "GET /api/v1/runs/{run_id}": RunResponse;
   "POST /api/v1/runs/{run_id}/cancel": RunResponse;
+  "GET /api/v1/runs/{run_id}/collaboration": CollaborationDetail;
+  "GET /api/v1/runs/{run_id}/tasks/{task_id}": CollaborationDetail;
   "GET /api/v1/sessions": SessionsResponse;
   "POST /api/v1/sessions": SessionResponse;
   "GET /api/v1/sessions/{session_id}": SessionDetailResponse;
@@ -109,10 +119,13 @@ export type ApiResponseByOperation = {
   "POST /api/v2/platform/tenants/{tenant_id}/billing/budget-projection/rebuild": BudgetRebuildResponse;
   "GET /api/v2/platform/tenants/{tenant_id}/billing/calls/{call_id}/receipts": UsageReceiptsResponse;
   "GET /api/v2/platform/tenants/{tenant_id}/billing/wallet": WalletResponse;
+  "GET /api/v2/tenants/{tenant_id}/agents/discovery": DiscoveryResponse;
   "GET /api/v2/tenants/{tenant_id}/billing/wallet": WalletResponse;
   "GET /api/v2/tenants/{tenant_id}/runs": RunsResponse;
   "GET /api/v2/tenants/{tenant_id}/runs/{run_id}": RunResponse;
   "POST /api/v2/tenants/{tenant_id}/runs/{run_id}/cancel": RunResponse;
+  "GET /api/v2/tenants/{tenant_id}/runs/{run_id}/collaboration": CollaborationDetail;
+  "GET /api/v2/tenants/{tenant_id}/runs/{run_id}/tasks/{task_id}": CollaborationDetail;
   "GET /api/v2/tenants/{tenant_id}/sessions": SessionsResponse;
   "POST /api/v2/tenants/{tenant_id}/sessions": SessionResponse;
   "GET /api/v2/tenants/{tenant_id}/sessions/{session_id}": SessionDetailResponse;

@@ -11,6 +11,7 @@ import type { Agent, GeneratedArtifact, Model, ReasoningEffort, ReasoningTrace, 
 import type { AGUIEvent } from "./ag-ui";
 import { messageRunId } from "./ag-ui";
 import { useAgentRun } from "./useAgentRun";
+import { CollaborationPanel } from "./CollaborationPanel";
 import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
 
@@ -78,12 +79,12 @@ export function Playground({ name }: { name?: string }) {
       const livePrefix = `assistant:${runId}:`;
       const isLiveReply = (id: string) => id === `assistant:${runId}` || id.startsWith(livePrefix);
       setLiveReasoning(messages.flatMap((message) => {
-        const trace = reasoningTrace(message);
+        const trace = message.subagentRunId ? null : reasoningTrace(message);
         return trace?.run_id === runId ? [trace] : [];
       }));
-      setLiveText(messages.filter((message) => message.role === "assistant" && isLiveReply(message.id))
+      setLiveText(messages.filter((message) => !message.subagentRunId && message.role === "assistant" && isLiveReply(message.id))
         .map((message) => typeof message.content === "string" ? message.content : "").filter(Boolean).join("\n\n"));
-      const confirmed = messages.flatMap((message) => ["user", "assistant"].includes(message.role) && typeof message.content === "string" && message.content && !isLiveReply(message.id)
+      const confirmed = messages.flatMap((message) => !message.subagentRunId && ["user", "assistant"].includes(message.role) && typeof message.content === "string" && message.content && !isLiveReply(message.id)
         ? [{ id: message.id, run_id: messageRunId(message), role: message.role, content: message.content }] : []);
       setDetail((current) => {
         if (!current || current.messages.length === confirmed.length && current.messages.every((message, index) =>
@@ -320,6 +321,7 @@ export function Playground({ name }: { name?: string }) {
             {(activeRun || liveText || liveReasoning.length > 0 || liveArtifacts.length > 0) && <article className="pg-message assistant" aria-label={activeRun ? "Agent 正在回复" : "Agent 的回复"}>
               <span className="pg-assistant-icon"><Sparkles size={22} strokeWidth={1.7} /></span>
               <div className="pg-message-content">
+                {activeRun?.execution_mode === "team" && <CollaborationPanel key={activeRun.id} runId={activeRun.id} live refreshKey={[...events].reverse().find((item) => item.event.type === "STATE_SNAPSHOT")?.id} />}
                 {liveReasoning.map((trace) => <Reasoning key={trace.id} trace={trace} />)}
                 {liveText ? <div className="pg-message-text">{liveText}{activeRun && <span className="typing-cursor" />}</div>
                   : !liveReasoning.length && <div className="pg-thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span>{activeRun?.status === "queued" ? "等待执行" : "正在思考"}</div>}
@@ -350,9 +352,9 @@ export function Playground({ name }: { name?: string }) {
             }} />
           <div className="pg-composer-toolbar">
             <div className="pg-run-settings">
-            <Select id="run-model" variant="quiet" className="pg-model-picker" aria-label="本次使用模型" icon={<Sparkles size={15} />}
+            <Select id="run-model" variant="quiet" className="pg-model-picker" aria-label={selectedAgent?.execution_mode === "team" ? "本次协调模型" : "本次使用模型"} icon={<Sparkles size={15} />}
               value={modelId} disabled={busy || Boolean(activeRun) || models.loading} searchable onChange={(event) => setModelId(event.target.value)}>
-              <option value="">{automaticModel ? `${automaticModel.name} · 自动` : selectedAgent?.model_id ? "跟随 Agent 设置" : "自动选择模型"}</option>
+              <option value="">{selectedAgent?.execution_mode === "team" ? "协调模型 · " : ""}{automaticModel ? `${automaticModel.name} · 自动` : selectedAgent?.model_id ? "跟随 Agent 设置" : "自动选择模型"}</option>
               {availableModels.map((model) => <option key={model.id} value={model.id} data-description={model.alias}>{model.name}{model.is_default ? " · 默认" : ""}</option>)}
             </Select>
             <Select id="run-reasoning" variant="quiet" className="pg-reasoning-picker" aria-label="本次思考强度" icon={<Brain size={15} />}
@@ -421,6 +423,7 @@ const ConversationHistory = memo(function ConversationHistory({ messages, artifa
     <div className="pg-message-content">
       {message.role === "assistant" && traces(message).map((trace) => <Reasoning key={trace.id} trace={trace} />)}
       <div className="pg-message-text">{message.content}</div>
+      {message.role === "user" && runId(message) !== hiddenRunId && runs?.find((run) => run.id === runId(message))?.execution_mode === "team" && <CollaborationPanel key={runId(message)} runId={runId(message) ?? ""} />}
       {artifacts?.filter((artifact) => artifact.run_id === runId(message) &&
         (message.role === "assistant" || !messages.some((item) => item.role === "assistant" && runId(item) === artifact.run_id)))
         .map((artifact) => <Artifact key={artifact.id} content={artifact.content}

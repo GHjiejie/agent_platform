@@ -195,6 +195,9 @@ class Worker:
 
     @staticmethod
     def _close_due_run(connection, run, status: str, message: str):
+        from agent_platform.modules.collaboration.scheduler import terminalize_children
+
+        terminalize_children(connection, run, status, message)
         connection.execute(
             update(t.runs)
             .where(t.runs.c.tenant_id == run["tenant_id"], t.runs.c.id == run["id"])
@@ -290,7 +293,10 @@ class Worker:
                 .one()
             )
             try:
-                self._authorize_identity(connection, run)
+                if run.get("root_spec", run["spec"]).get("execution_mode") == "team":
+                    self.invocation._authorize_identity(connection, run)
+                else:
+                    self._authorize_identity(connection, run)
                 active = True
             except PlatformError:
                 active = False
@@ -335,7 +341,15 @@ class Worker:
             ExecutionContext.from_run(run), messages, tools
         )
 
-    def finish(self, run: dict, status: str, result: str = "", error: str = "") -> None:
+    def finish(
+        self,
+        run: dict,
+        status: str,
+        result: str = "",
+        error: str = "",
+        *,
+        outcome="complete",
+    ) -> None:
         with self.db.transaction(f"tenant:{run['tenant_id']}") as connection:
             current = self._assert_lease(connection, run, check_deadline=False)
             if current["cancel_requested"] and status == "succeeded":
@@ -349,8 +363,19 @@ class Worker:
             connection.execute(
                 update(t.runs)
                 .where(t.runs.c.id == run["id"])
-                .values(status=status, error=error, finished_at=now(), lease_until=None)
+                .values(
+                    status=status,
+                    error=error,
+                    finished_at=now(),
+                    lease_until=None,
+                    outcome=outcome if status == "succeeded" else None,
+                )
             )
+            from agent_platform.modules.collaboration.scheduler import (
+                terminalize_children,
+            )
+
+            terminalize_children(connection, run, status, error)
             if status == "succeeded":
                 connection.execute(
                     insert(t.messages).values(
@@ -370,6 +395,7 @@ class Worker:
                 kind,
                 {
                     "status": status,
+                    "outcome": outcome if status == "succeeded" else None,
                     "content": result if status == "succeeded" else "",
                     "error": error,
                 },
@@ -384,10 +410,6 @@ class Worker:
 
         pulse = asyncio.create_task(self.heartbeat(run))
         try:
-            if run["spec"].get("execution_mode") == "team":
-                raise PlatformError(
-                    409, "team_executor_unavailable", "团队执行器尚未启用。"
-                )
             with self.db.read() as connection:
                 messages = [
                     {"role": row["role"], "content": row["content"]}
@@ -422,10 +444,22 @@ class Worker:
                 if run["deadline"] is not None
                 else None
             ):
-                result = await execute_agent(
-                    run["spec"], messages, invoke, emit, cancelled
-                )
-            await asyncio.to_thread(self.finish, run, "succeeded", result)
+                outcome = "complete"
+                if run["spec"].get("execution_mode") == "team":
+                    from agent_platform.modules.collaboration.scheduler import (
+                        CollaborationScheduler,
+                    )
+
+                    result, outcome = await CollaborationScheduler(self, run).run_team(
+                        messages
+                    )
+                else:
+                    result = await execute_agent(
+                        run["spec"], messages, invoke, emit, cancelled
+                    )
+            await asyncio.to_thread(
+                self.finish, run, "succeeded", result, outcome=outcome
+            )
         except RunCancelled as exc:
             with suppress(PlatformError):
                 await asyncio.to_thread(

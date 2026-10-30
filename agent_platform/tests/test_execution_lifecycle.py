@@ -614,8 +614,13 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                         )
                     command.upgrade(config, "0008_execution_deadlines")
                     command.upgrade(config, "0008_execution_deadlines")
+                    historical_runs = Table(
+                        "platform_runs", MetaData(), autoload_with=db.engine
+                    )
                     with db.read() as connection:
-                        run = connection.execute(select(t.runs)).mappings().one()
+                        run = (
+                            connection.execute(select(historical_runs)).mappings().one()
+                        )
                         self.assertAlmostEqual(
                             run["queue_expires_at"],
                             datetime.fromisoformat(stamp).timestamp() + 42,

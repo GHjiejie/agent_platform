@@ -289,6 +289,101 @@ class PostgreSQLIsolationTests(unittest.TestCase):
             with worker.transaction("tenant:" + self.tenant_b) as connection:
                 self.assertEqual(connection.execute(select(table)).all(), [])
 
+    def test_sequential_team_executes_with_deployed_service_roles(self):
+        from sqlalchemy import update
+
+        from agent_platform.infrastructure import tenancy_tables as nt
+        from agent_platform.modules.collaboration.queries import detail
+        from agent_platform.modules.collaboration.templates import install
+        from agent_platform.modules.runtime.gateway import ModelReply
+        from agent_platform.tests.generative_ui_fixture import COUNTER_UI
+        from agent_platform.tests.test_collaboration_runtime import ScriptedGateway
+
+        control = ControlFixture()
+        self.addCleanup(control.close)
+        settings = replace(
+            self.platform.settings,
+            collaboration_enabled=True,
+            litellm_url=control.url,
+            gateway_control_url=control.url,
+            gateway_control_key="temporary-acceptance-control-key",
+        )
+        platform = Platform(self.db, settings)
+        deployment = platform.gateway.create_deployment(
+            {
+                "name": "Team acceptance",
+                "internal_route": "team-offline",
+                "capabilities": {"text": True, "tools": True},
+            },
+            actor_id=self.fixture.owner["id"],
+        )
+        platform.gateway.grant_model(
+            self.tenant_a,
+            deployment["id"],
+            {
+                "name": "Team model",
+                "alias": "team-model",
+                "input_price": "1",
+                "output_price": "2",
+                "context_window": 32000,
+                "max_output_tokens": 4096,
+            },
+            actor_id=self.fixture.owner["id"],
+        )
+        platform.gateway.enroll(self.tenant_a, actor_id=self.fixture.owner["id"])
+        gateway_db = self.sandbox.database(self.sandbox.runtime_urls["gateway-sync"])
+        self.assertTrue(GatewayService(gateway_db, settings).process_one())
+        with self.db.transaction("tenant:" + self.tenant_a) as connection:
+            connection.execute(
+                update(nt.tenant_settings)
+                .where(nt.tenant_settings.c.tenant_id == self.tenant_a)
+                .values(collaboration_enabled=True)
+            )
+        with self.db.tenant_scope(self.tenant_a):
+            installed = install(platform, self.fixture.owner)
+            session = platform.create_session(
+                self.fixture.owner, installed["id"], "Sequential team"
+            )
+            queued = platform.enqueue(
+                self.fixture.owner,
+                session["id"],
+                "No business data supplied",
+                uuid4().hex,
+            )
+        platform.billing.credit(
+            self.tenant_a, self.fixture.owner["id"], "1", "Team acceptance", uuid4().hex
+        )
+        output = '{"facts":[],"missing":["No source data"]}'
+        gateway = ScriptedGateway(
+            [
+                output,
+                output,
+                ModelReply(
+                    "",
+                    [{"id": "ui", "name": "generate_sandboxed_ui", "args": COUNTER_UI}],
+                    20,
+                    10,
+                    {},
+                ),
+                output,
+                "No business data supplied",
+            ]
+        )
+        worker_db = self.sandbox.database(self.sandbox.runtime_urls["worker"])
+        worker = Worker(worker_services(worker_db, settings), gateway=gateway)
+        claimed = worker.claim()
+        self.assertEqual(claimed["id"], queued["id"])
+        asyncio.run(worker.execute(claimed))
+        result = detail(platform, self.fixture.owner, queued["id"])
+        self.assertEqual(result["status"], "succeeded", result)
+        self.assertEqual(
+            [task["status"] for task in result["tasks"]], ["succeeded"] * 3
+        )
+        self.assertEqual(len(result["executions"]), 4)
+        self.assertEqual(len(result["artifacts"]), 4)
+        self.assertEqual(len(gateway.calls), 5)
+        self.assertGreater(Decimal(result["fees"]["confirmed"]), 0)
+
     def test_all_services_are_non_owner_and_all_tenant_tables_force_rls(self):
         for service, url in self.sandbox.runtime_urls.items():
             with self.subTest(service=service):

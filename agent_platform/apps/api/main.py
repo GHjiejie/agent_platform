@@ -580,7 +580,7 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "platform_enabled": settings.collaboration_enabled,
         }
 
-    @app.get("/api/v1/agents/discovery")
+    @app.get("/api/v1/agents/discovery", response_model=r.DiscoveryResponse)
     def discover_agents(
         capability: str | None = Query(default=None, max_length=64),
         task_type: str | None = Query(default=None, max_length=64),
@@ -623,6 +623,12 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "default_output_tokens": settings.default_output_tokens,
             "default_context_window": settings.default_context_window,
         }
+
+    @app.post("/api/v1/agents/templates/analysis-team")
+    def install_analysis_team(user=Depends(admin)):
+        from agent_platform.modules.collaboration.templates import install
+
+        return install(platform, user)
 
     @app.post("/api/v1/agents", status_code=201)
     def create_agent(body: s.AgentCreate, user=Depends(admin)):
@@ -738,6 +744,22 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
     )
     def cancel(run_id: str, user=Depends(auth)):
         return platform.cancel_run(user, run_id)
+
+    @app.get(
+        "/api/v1/runs/{run_id}/collaboration", response_model=r.CollaborationDetail
+    )
+    def collaboration_detail(run_id: str, user=Depends(auth)):
+        from agent_platform.modules.collaboration.queries import detail
+
+        return detail(platform, user, run_id)
+
+    @app.get(
+        "/api/v1/runs/{run_id}/tasks/{task_id}", response_model=r.CollaborationDetail
+    )
+    def collaboration_task(run_id: str, task_id: str, user=Depends(auth)):
+        from agent_platform.modules.collaboration.queries import detail
+
+        return detail(platform, user, run_id, task_id)
 
     @app.get("/api/v1/runs/{run_id}/events")
     async def events(

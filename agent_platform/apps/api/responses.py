@@ -9,6 +9,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
+from agent_platform.modules.agent_registry.contracts import TaskContract
+
 
 def money_string(value):
     if isinstance(value, Decimal):
@@ -70,6 +72,8 @@ class WalletResponse(ResponseModel):
 
 
 class RunResponse(ResponseModel):
+    execution_mode: Literal["single", "team"] = "single"
+    outcome: str | None = None
     id: str
     tenant_id: str
     session_id: str
@@ -212,3 +216,78 @@ class BudgetRebuildResponse(ResponseModel):
     tenant_id: str
     spent: Money
     dimensions: int
+
+
+class CollaborationFees(ResponseModel):
+    confirmed: Money
+    pending: Money
+
+
+class CollaborationTask(ResponseModel):
+    id: str
+    logical_key: str
+    member_key: str
+    agent_id: str
+    agent_version: int
+    task_type: str
+    objective: str
+    dependencies: list[str]
+    required: bool
+    status: str
+    error: str = ""
+
+
+class CollaborationExecution(ResponseModel):
+    id: str
+    task_id: str | None
+    attempt: int
+    role: str
+    agent_id: str
+    agent_version: int
+    name: str
+    model_alias: str
+    status: str
+    output: Any
+    error: str
+    input_digest: str
+    input_summary: str | None
+    created_at: str
+    finished_at: str | None
+    fees: CollaborationFees
+
+
+class CollaborationArtifact(ResponseModel):
+    id: str
+    execution_id: str
+    version: int
+    kind: str
+    content: Any
+    digest: str
+    validation_status: str
+
+
+class CollaborationDetail(ResponseModel):
+    run_id: str
+    status: str
+    outcome: str | None
+    enabled: bool
+    tasks: list[CollaborationTask]
+    executions: list[CollaborationExecution]
+    artifacts: list[CollaborationArtifact]
+    fees: CollaborationFees
+    max_cost: Money | None
+
+
+class DiscoveryCandidate(ResponseModel):
+    id: str
+    version: int
+    name: str
+    description: str
+    capability_keys: list[str]
+    task_contracts: list[TaskContract]
+    contract_digests: dict[str, dict[str, str]]
+
+
+class DiscoveryResponse(ResponseModel):
+    items: list[DiscoveryCandidate]
+    next_cursor: str | None

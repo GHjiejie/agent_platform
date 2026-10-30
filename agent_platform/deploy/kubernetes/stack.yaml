@@ -38,6 +38,7 @@ items:
       PLATFORM_WORKER_CONCURRENCY: "4"
       PLATFORM_RUN_TIMEOUT: "0"
       PLATFORM_MODEL_TIMEOUT: "90"
+      PLATFORM_COLLABORATION_ENABLED: "false"
       PLATFORM_MAX_RUN_COST: "1"
       PLATFORM_EXPORT_DIRECTORY: /app/agent_platform/.data/exports
       PLATFORM_TOMBSTONE_PATH: /app/agent_platform/.tombstones/tenant-tombstones.jsonl

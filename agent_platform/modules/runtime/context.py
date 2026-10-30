@@ -15,6 +15,7 @@ class ExecutionContext:
     task_id: str | None
     execution_id: str | None
     attempt: int
+    role: str
     owner: str | None
     fence: int
     deadline: float | None
@@ -22,7 +23,16 @@ class ExecutionContext:
     _spec_json: str
 
     @classmethod
-    def from_run(cls, run, *, spec=None, task_id=None, execution_id=None, attempt=1):
+    def from_run(
+        cls,
+        run,
+        *,
+        spec=None,
+        task_id=None,
+        execution_id=None,
+        attempt=1,
+        role="single",
+    ):
         effective = spec if spec is not None else run["spec"]
         return cls(
             run["tenant_id"],
@@ -34,6 +44,7 @@ class ExecutionContext:
             task_id,
             execution_id,
             attempt,
+            role,
             run.get("owner"),
             run.get("fence", 0),
             run.get("deadline"),
@@ -58,4 +69,5 @@ class ExecutionContext:
             "agent_name": self.spec.get("name", root.get("agent_name", "")),
             "task_id": self.task_id,
             "execution_id": self.execution_id,
+            "execution_role": self.role,
         }

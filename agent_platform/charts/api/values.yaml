@@ -42,6 +42,7 @@ strategy:
   type: RollingUpdate
 terminationGracePeriodSeconds: 360
 config:
+  collaborationEnabled: false
   mode: saas
   redisUrl: redis://redis:6379/0
   secureCookies: true

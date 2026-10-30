@@ -154,6 +154,7 @@ runs = Table(
     Column("session_id", String(64), nullable=False, index=True),
     Column("user_id", String(64), nullable=False),
     Column("agent_name", String(120), nullable=False),
+    Column("outcome", String(16)),
     Column("spec", JSON, nullable=False),
     Column("message", Text, nullable=False),
     Column("status", String(24), nullable=False, index=True),

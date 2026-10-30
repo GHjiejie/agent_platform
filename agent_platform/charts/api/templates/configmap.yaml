@@ -11,5 +11,6 @@ data:
   PLATFORM_EMBEDDED_WORKER: "false"
   PLATFORM_LITELLM_URL: {{ .Values.config.litellmUrl | quote }}
   PLATFORM_LITELLM_ADMIN_URL: {{ .Values.config.litellmAdminUrl | quote }}
+  PLATFORM_COLLABORATION_ENABLED: {{ .Values.config.collaborationEnabled | quote }}
   PLATFORM_MAX_RUN_COST: {{ .Values.config.maxRunCost | quote }}
   PLATFORM_EXPORT_DIRECTORY: {{ .Values.exports.mountPath | quote }}

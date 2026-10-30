@@ -253,7 +253,7 @@ class AgUIContractTests(unittest.IsolatedAsyncioTestCase):
                 select(t.runs.c.spec).where(t.runs.c.id == run["id"])
             )
             self.assertEqual(spec["execution_policy"]["reasoning_effort"], "low")
-            inference, _ = Worker(self.platform)._resolve_inference(
+            inference, _ = Worker(self.platform).invocation._resolve_inference(
                 {"tenant_id": self.tenant, "spec": spec}
             )
             self.assertEqual(inference.reasoning_effort, "low")

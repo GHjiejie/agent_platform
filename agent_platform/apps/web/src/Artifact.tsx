@@ -14,7 +14,8 @@ export function Artifact({ content: value, runStatus, onRegenerate, regenerateDi
   const content = useMemo(() => parseGenerativeContent(value), [value]);
   const disabled = regenerateDisabled || isRunning(runStatus);
   if (!content) return <ArtifactError message="界面数据格式不正确或超过大小限制。" onRegenerate={onRegenerate} regenerateDisabled={disabled} />;
-  return <ValidArtifact content={content} runStatus={runStatus} onRegenerate={onRegenerate} regenerateDisabled={disabled} />;
+  const validated = typeof value === "object" && value !== null && "validated" in value && value.validated === true;
+  return <ValidArtifact validated={validated} content={content} runStatus={runStatus} onRegenerate={onRegenerate} regenerateDisabled={disabled} />;
 }
 
 function ArtifactError({ message, failure, onRegenerate, regenerateDisabled }: { message: string; failure?: ArtifactFailure } & RegenerateProps) {
@@ -28,7 +29,7 @@ function ArtifactError({ message, failure, onRegenerate, regenerateDisabled }: {
   </div>;
 }
 
-function ValidArtifact({ content, runStatus, onRegenerate, regenerateDisabled }: { content: NonNullable<ReturnType<typeof parseGenerativeContent>>; runStatus: RunStatus } & RegenerateProps) {
+function ValidArtifact({ content, runStatus, validated, onRegenerate, regenerateDisabled }: { validated: boolean; content: NonNullable<ReturnType<typeof parseGenerativeContent>>; runStatus: RunStatus } & RegenerateProps) {
   const phase = artifactPhase(content);
   const frame = useRef<HTMLIFrameElement>(null);
   const html = content.html?.join("") ?? "";
@@ -46,7 +47,7 @@ function ValidArtifact({ content, runStatus, onRegenerate, regenerateDisabled }:
   // revision. Keep it while changing documents so the page never resets to 320px.
   const [frameHeight, setFrameHeight] = useState<number | null>(null);
   const final = useMemo(() => phase === "initialize" ? finalDocument(content, executionChannel) : "", [executionVersion, executionChannel]);
-  const stopped = ["cancelled", "canceled", "failed", "expired", "interrupted", "incomplete"].includes(runStatus);
+  const stopped = !(validated && phase === "initialize") && ["cancelled", "canceled", "failed", "expired", "interrupted", "incomplete"].includes(runStatus);
   const error = phase === "empty" || frameStatus === "error" || frameStatus === "timeout" ||
     (["failed", "incomplete"].includes(runStatus) && phase !== "initialize") ||
     (runStatus === "succeeded" && phase !== "initialize");

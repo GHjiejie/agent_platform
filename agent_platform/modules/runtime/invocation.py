@@ -7,7 +7,7 @@ from dataclasses import replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 
 from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import runtime_tables as rt
@@ -156,6 +156,59 @@ class InvocationService:
             "execution_limits", effective_limits(policy, self.settings)
         )
         max_cost = min(self.max_run_cost, Decimal(limits["max_cost"]))
+        team = run.get("root_spec", run["spec"]).get("team_snapshot")
+        if team and run.get("execution_role") != "summary":
+            max_cost *= 1 - Decimal(str(team["definition"]["summary_reserve_fraction"]))
+        if run.get("execution_id"):
+            member_ids = select(t.calls.c.id).where(
+                t.calls.c.tenant_id == run["tenant_id"],
+                t.calls.c.execution_id == run["execution_id"],
+            )
+            receipts = list(
+                connection.execute(
+                    select(reservations_table).where(
+                        reservations_table.c.tenant_id == run["tenant_id"],
+                        reservations_table.c.call_id.in_(member_ids),
+                    )
+                ).mappings()
+            )
+            member_cost = sum(
+                (
+                    Decimal(str(r["cost"]))
+                    + (
+                        Decimal(str(r["amount"]))
+                        if r["status"] in ("reserved", "unresolved")
+                        else Decimal(0)
+                    )
+                    for r in receipts
+                ),
+                Decimal(0),
+            )
+            member_limits = run["spec"].get(
+                "execution_limits",
+                effective_limits(read_policy(run["spec"]), self.settings),
+            )
+            if member_cost + amount > Decimal(member_limits["max_cost"]):
+                raise PlatformError(
+                    402, "task_budget_exceeded", "成员任务费用达到上限。"
+                )
+            member_policy = read_policy(run["spec"])
+            member_tokens = sum(
+                (r["input_tokens"] or 0) + (r["output_tokens"] or 0)
+                if r["status"] == "settled"
+                else r["estimated_input_tokens"] + r["max_output_tokens"]
+                if r["status"] in ("reserved", "unresolved")
+                else 0
+                for r in receipts
+            )
+            if (
+                member_policy.max_total_tokens is not None
+                and member_tokens + input_tokens + max_output
+                > member_policy.max_total_tokens
+            ):
+                raise PlatformError(
+                    400, "task_token_budget_exceeded", "成员任务 Token 达到上限。"
+                )
         if committed + amount > max_cost:
             raise PlatformError(
                 402,
@@ -349,6 +402,32 @@ class InvocationService:
         model = run["spec"]["model"]
         with self.db.transaction(f"tenant:{run['tenant_id']}") as connection:
             self._assert_lease(connection, run)
+            team = run.get("root_spec", run["spec"]).get("team_snapshot")
+            if team:
+                count_query = (
+                    select(func.count())
+                    .select_from(t.calls)
+                    .where(
+                        t.calls.c.tenant_id == run["tenant_id"],
+                        t.calls.c.run_id == run["id"],
+                        t.calls.c.status != "rejected",
+                    )
+                )
+                count = connection.scalar(count_query)
+                limit = team["definition"]["max_model_calls"]
+                if run.get("execution_role") != "summary":
+                    limit -= 1
+                if count >= limit:
+                    raise PlatformError(
+                        429, "team_call_limit", "团队模型调用次数达到上限。"
+                    )
+                member_count = connection.scalar(
+                    count_query.where(t.calls.c.execution_id == run.get("execution_id"))
+                )
+                if member_count >= run["spec"]["max_steps"]:
+                    raise PlatformError(
+                        429, "task_call_limit", "成员模型调用次数达到上限。"
+                    )
             user = (
                 connection.execute(
                     select(t.users).where(t.users.c.id == run["user_id"])

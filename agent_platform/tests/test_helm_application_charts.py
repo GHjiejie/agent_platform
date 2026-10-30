@@ -19,6 +19,7 @@ CONFIG_KEYS = {
         "PLATFORM_LITELLM_URL",
         "PLATFORM_LITELLM_ADMIN_URL",
         "PLATFORM_MAX_RUN_COST",
+        "PLATFORM_COLLABORATION_ENABLED",
         "PLATFORM_EXPORT_DIRECTORY",
     },
     "worker": {
@@ -29,6 +30,7 @@ CONFIG_KEYS = {
         "PLATFORM_RUN_TIMEOUT",
         "PLATFORM_MODEL_TIMEOUT",
         "PLATFORM_MAX_RUN_COST",
+        "PLATFORM_COLLABORATION_ENABLED",
     },
     "gateway-sync": {
         "PLATFORM_MODE",

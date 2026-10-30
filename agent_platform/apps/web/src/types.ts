@@ -1,4 +1,4 @@
-import type { CallResponse, ExecutionPolicy, PrincipalResponse, ReasoningResponse, RunResponse, SessionResponse, WalletResponse } from "./api-contract.generated";
+import type { AgentCreate, CallResponse, ExecutionPolicy, PrincipalResponse, ReasoningResponse, RunResponse, SessionResponse, WalletResponse } from "./api-contract.generated";
 
 export type User = {
   id: string;
@@ -28,7 +28,8 @@ export type GatewayAdmin = {
   admin_url: string;
   configured: boolean;
 };
-export type Agent = {
+export type Agent = Pick<AgentCreate, "execution_mode" | "capability_keys" | "task_contracts" | "collaboration_spec"> & {
+  available?: boolean;
   id: string;
   name: string;
   description: string;

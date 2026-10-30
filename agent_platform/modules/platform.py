@@ -639,126 +639,132 @@ class Platform:
 
     def save_agent(self, user: dict, values: dict, agent_id: str | None = None) -> dict:
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
-            self.require_current(connection, user, admin=True)
-            if not agent_id:
-                maximum = connection.scalar(
-                    select(nt.entitlements.c.max_agents).where(
-                        nt.entitlements.c.tenant_id == user["tenant_id"]
-                    )
-                )
-                count = connection.scalar(
-                    select(func.count())
-                    .select_from(t.agents)
-                    .where(t.agents.c.tenant_id == user["tenant_id"])
-                )
-                if maximum is not None and count >= maximum:
-                    raise PlatformError(
-                        429, "agent_limit", "组织 Agent 数量已达到套餐上限。"
-                    )
-            current = (
-                self.owned(connection, t.agents, user, agent_id)
-                if agent_id
-                else {
-                    "id": uid(),
-                    "tenant_id": user["tenant_id"],
-                    "created_at": now(),
-                    "published_version": 0,
-                }
-            )
-            result = {**current, **values}
-            from agent_platform.modules.agent_registry.contracts import AgentDeclaration
+            return self._save_agent(connection, user, values, agent_id)
 
-            try:
-                result.update(AgentDeclaration.from_spec(result).model_dump())
-            except ValueError as exc:
-                raise PlatformError(
-                    422, "invalid_agent_declaration", str(exc)
-                ) from None
-            try:
-                # A nested PATCH merges declared fields; explicit null resets
-                # an inherited field. Empty object resets the whole policy.
-                if values.get("execution_policy"):
-                    result["execution_policy"] = {
-                        **current.get("execution_policy", {}),
-                        **values["execution_policy"],
-                    }
-                policy = read_policy(result)
-            except ValueError:
-                raise PlatformError(
-                    422, "invalid_execution_policy", "Agent 执行策略无效。"
-                ) from None
-            if (
-                policy.timeout_seconds
-                and self.settings.run_timeout
-                and policy.timeout_seconds > self.settings.run_timeout
-            ):
-                raise PlatformError(
-                    400,
-                    "execution_policy_limit",
-                    f"运行时限不能超过平台上限 {self.settings.run_timeout} 秒。",
+    def _save_agent(
+        self, connection, user: dict, values: dict, agent_id: str | None = None
+    ) -> dict:
+        self.require_current(connection, user, admin=True)
+        if not agent_id:
+            maximum = connection.scalar(
+                select(nt.entitlements.c.max_agents).where(
+                    nt.entitlements.c.tenant_id == user["tenant_id"]
                 )
-            if policy.max_cost and Decimal(policy.max_cost) > Decimal(
-                self.settings.max_run_cost
-            ):
-                raise PlatformError(
-                    400,
-                    "execution_policy_limit",
-                    f"费用上限不能超过平台上限 {self.settings.max_run_cost} USD。",
-                )
-            result["execution_policy"] = policy.model_dump()
-            if result.get("model_id"):
-                model = self.owned(connection, t.models, user, result["model_id"])
-                if result["max_tokens"] > model["max_output_tokens"]:
-                    raise PlatformError(
-                        400, "output_limit_exceeded", "Agent 输出上限超过模型配置。"
-                    )
-            if agent_id:
-                connection.execute(
-                    update(t.agents).where(t.agents.c.id == agent_id).values(**result)
-                )
-            else:
-                connection.execute(insert(t.agents).values(**result))
-            audit(
-                connection,
-                user,
-                "agent.update" if agent_id else "agent.create",
-                result["id"],
             )
+            count = connection.scalar(
+                select(func.count())
+                .select_from(t.agents)
+                .where(t.agents.c.tenant_id == user["tenant_id"])
+            )
+            if maximum is not None and count >= maximum:
+                raise PlatformError(
+                    429, "agent_limit", "组织 Agent 数量已达到套餐上限。"
+                )
+        current = (
+            self.owned(connection, t.agents, user, agent_id)
+            if agent_id
+            else {
+                "id": uid(),
+                "tenant_id": user["tenant_id"],
+                "created_at": now(),
+                "published_version": 0,
+            }
+        )
+        result = {**current, **values}
+        from agent_platform.modules.agent_registry.contracts import AgentDeclaration
+
+        try:
+            result.update(AgentDeclaration.from_spec(result).model_dump())
+        except ValueError as exc:
+            raise PlatformError(422, "invalid_agent_declaration", str(exc)) from None
+        try:
+            # A nested PATCH merges declared fields; explicit null resets
+            # an inherited field. Empty object resets the whole policy.
+            if values.get("execution_policy"):
+                result["execution_policy"] = {
+                    **current.get("execution_policy", {}),
+                    **values["execution_policy"],
+                }
+            policy = read_policy(result)
+        except ValueError:
+            raise PlatformError(
+                422, "invalid_execution_policy", "Agent 执行策略无效。"
+            ) from None
+        if (
+            policy.timeout_seconds
+            and self.settings.run_timeout
+            and policy.timeout_seconds > self.settings.run_timeout
+        ):
+            raise PlatformError(
+                400,
+                "execution_policy_limit",
+                f"运行时限不能超过平台上限 {self.settings.run_timeout} 秒。",
+            )
+        if policy.max_cost and Decimal(policy.max_cost) > Decimal(
+            self.settings.max_run_cost
+        ):
+            raise PlatformError(
+                400,
+                "execution_policy_limit",
+                f"费用上限不能超过平台上限 {self.settings.max_run_cost} USD。",
+            )
+        result["execution_policy"] = policy.model_dump()
+        if result.get("model_id"):
+            model = self.owned(connection, t.models, user, result["model_id"])
+            if result["max_tokens"] > model["max_output_tokens"]:
+                raise PlatformError(
+                    400, "output_limit_exceeded", "Agent 输出上限超过模型配置。"
+                )
+        if agent_id:
+            connection.execute(
+                update(t.agents).where(t.agents.c.id == agent_id).values(**result)
+            )
+        else:
+            connection.execute(insert(t.agents).values(**result))
+        audit(
+            connection,
+            user,
+            "agent.update" if agent_id else "agent.create",
+            result["id"],
+        )
         return result
 
     def publish(self, user: dict, agent_id: str) -> dict:
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
-            self.require_current(connection, user, admin=True)
-            agent = self.owned(connection, t.agents, user, agent_id)
-            if agent.get("model_id"):
-                model = self.owned(connection, t.models, user, agent["model_id"])
-                if not model["active"]:
-                    raise PlatformError(
-                        400, "model_disabled", "请先启用 Agent 使用的模型。"
-                    )
-            from agent_platform.modules.agent_registry.contracts import AgentDeclaration
-            from agent_platform.modules.collaboration.team import freeze_team
+            return self._publish(connection, user, agent_id)
 
-            agent.update(AgentDeclaration.from_spec(agent).model_dump())
-            team = freeze_team(self, connection, user, agent)
-            if team is not None:
-                agent["team_snapshot"] = team
-            version = agent["published_version"] + 1
-            connection.execute(
-                insert(t.agent_versions).values(
-                    agent_id=agent_id,
-                    version=version,
-                    tenant_id=user["tenant_id"],
-                    spec=agent,
-                    created_at=now(),
+    def _publish(self, connection, user: dict, agent_id: str) -> dict:
+        self.require_current(connection, user, admin=True)
+        agent = self.owned(connection, t.agents, user, agent_id)
+        if agent.get("model_id"):
+            model = self.owned(connection, t.models, user, agent["model_id"])
+            if not model["active"]:
+                raise PlatformError(
+                    400, "model_disabled", "请先启用 Agent 使用的模型。"
                 )
+        from agent_platform.modules.agent_registry.contracts import AgentDeclaration
+        from agent_platform.modules.collaboration.team import freeze_team
+
+        agent.update(AgentDeclaration.from_spec(agent).model_dump())
+        team = freeze_team(self, connection, user, agent)
+        if team is not None:
+            agent["team_snapshot"] = team
+        version = agent["published_version"] + 1
+        connection.execute(
+            insert(t.agent_versions).values(
+                agent_id=agent_id,
+                version=version,
+                tenant_id=user["tenant_id"],
+                spec=agent,
+                created_at=now(),
             )
-            connection.execute(
-                update(t.agents)
-                .where(t.agents.c.id == agent_id)
-                .values(published_version=version)
-            )
-            audit(connection, user, "agent.publish", f"{agent_id}:{version}")
+        )
+        connection.execute(
+            update(t.agents)
+            .where(t.agents.c.id == agent_id)
+            .values(published_version=version)
+        )
+        audit(connection, user, "agent.publish", f"{agent_id}:{version}")
         return {"version": version}
 
     def create_session(self, user: dict, agent_id: str, title: str | None) -> dict:
@@ -1105,12 +1111,14 @@ class Platform:
                     "agent_name",
                     "created_at",
                     "status",
+                    "outcome",
                     "error",
                     "finished_at",
                 )
             },
             "model_id": row.get("spec", {}).get("model_id"),
             "model_alias": row.get("spec", {}).get("model", {}).get("alias"),
+            "execution_mode": row.get("spec", {}).get("execution_mode", "single"),
         }
 
     def get_run(self, user: dict, run_id: str) -> dict:
