@@ -67,6 +67,7 @@ class Database:
             "checkpoint_tables",
             "task_lease_tables",
             "remote_agent_tables",
+            "remote_call_tables",
             "operations_tables",
             "support_tables",
             "metering_tables",
@@ -135,6 +136,7 @@ class Database:
                     "checkpoint_tables",
                     "task_lease_tables",
                     "remote_agent_tables",
+                    "remote_call_tables",
                     "operations_tables",
                     "metering_tables",
                 ):

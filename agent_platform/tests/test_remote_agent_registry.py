@@ -3,6 +3,7 @@
 import asyncio
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 from sqlalchemy import func, select, update
 
@@ -101,6 +102,69 @@ class RemoteAgentRegistryTests(unittest.TestCase):
         self.assertIsNotNone(claim)
         asyncio.run(queue.execute(claim))
         return queue, claim
+
+    def test_tenant_purge_scrubs_remote_secrets_descriptors_and_endpoints(self):
+        from agent_platform.infrastructure import operations_tables as ot
+        from agent_platform.modules.operations import OperationsService
+        from agent_platform.modules.run_records import now
+
+        credential, _, registration = self.register()
+        self.probe(registration)
+        self.platform.settings = replace(
+            self.platform.settings,
+            export_directory=Path(self.temporary.name) / "exports",
+            tombstone_path=Path(self.temporary.name) / "tombstones",
+        )
+        operations = OperationsService(self.platform)
+        operations.close_tenant(self.fixture.principal, self.tenant, "Fixture deletion")
+        with self.db.transaction(f"tenant:{self.tenant}") as conn:
+            conn.execute(
+                update(ot.closures)
+                .where(ot.closures.c.tenant_id == self.tenant)
+                .values(
+                    status="purging",
+                    retain_until=0,
+                    tombstone_written_at=now(),
+                )
+            )
+        for _ in range(35):
+            job = operations._claim_closure(self.tenant)
+            if job is None:
+                break
+            operations._purge_page(job)
+        with self.db.read() as conn:
+            secret = (
+                conn.execute(
+                    select(rt.secrets).where(rt.secrets.c.id == credential["id"])
+                )
+                .mappings()
+                .one()
+            )
+            metadata = (
+                conn.execute(
+                    select(rt.credentials).where(
+                        rt.credentials.c.id == credential["id"]
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            version = (
+                conn.execute(
+                    select(rt.versions).where(rt.versions.c.id == registration["id"])
+                )
+                .mappings()
+                .one()
+            )
+            endpoint = conn.execute(select(rt.endpoints)).mappings().one()
+        self.assertEqual((secret["ciphertext"], secret["digest"]), ("", ""))
+        self.assertFalse(metadata["active"])
+        self.assertEqual(metadata["name"], "[已删除]")
+        self.assertFalse(version["enabled"])
+        self.assertEqual(version["descriptor"], {"content_deleted": True})
+        self.assertEqual(endpoint["url"], "")
+        self.assertEqual(endpoint["health_status"], "disabled")
+        self.assertIsNone(endpoint["probe_owner"])
 
     def test_registration_is_idempotent_versioned_and_secrets_never_appear_in_api(self):
         credential, body, registered = self.register()

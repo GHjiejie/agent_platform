@@ -12,6 +12,7 @@ from agent_platform.infrastructure import (  # noqa: F401
     journal_tables,
     operations_tables,
     remote_agent_tables,
+    remote_call_tables,
     runtime_tables,
     support_tables,
     tables,

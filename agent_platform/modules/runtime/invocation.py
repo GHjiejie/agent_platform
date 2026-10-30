@@ -14,6 +14,7 @@ from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import runtime_tables as rt
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure.errors import PlatformError
+from agent_platform.infrastructure.remote_call_tables import calls as remote_calls
 from agent_platform.modules.billing.service import BillingService, reservations_table
 from agent_platform.modules.execution_policy import effective_limits, read_policy
 from agent_platform.modules.run_records import now, uid
@@ -40,6 +41,16 @@ def sync_call_receipt(platform: "Platform | WorkerServices", receipt: dict) -> N
     if isinstance(raw, str):
         raw = json.loads(raw)
     with platform.db.transaction(f"tenant:{receipt['tenant_id']}") as connection:
+        if receipt.get("charge_kind") == "fixed":
+            connection.execute(
+                update(remote_calls)
+                .where(
+                    remote_calls.c.id == receipt["call_id"],
+                    remote_calls.c.tenant_id == receipt["tenant_id"],
+                )
+                .values(status=status, updated_at=receipt.get("updated_at", now()))
+            )
+            return
         connection.execute(
             update(t.calls)
             .where(
@@ -132,6 +143,10 @@ class InvocationService:
                 "context_limit",
                 "完整会话及工具定义超过模型上下文或输出限制，请新建会话。",
             )
+        self.authorize_budget(connection, run, input_tokens, amount, max_output)
+
+    def authorize_budget(self, connection, run, input_tokens, amount, max_output):
+        """Called inside the admission transaction for both local and remote calls."""
         existing = list(
             connection.execute(
                 select(reservations_table).where(
@@ -161,9 +176,18 @@ class InvocationService:
         if team and run.get("execution_role") != "summary":
             max_cost *= 1 - Decimal(str(team["definition"]["summary_reserve_fraction"]))
         if run.get("execution_id"):
-            member_ids = select(t.calls.c.id).where(
-                t.calls.c.tenant_id == run["tenant_id"],
-                t.calls.c.execution_id == run["execution_id"],
+            member_ids = (
+                select(t.calls.c.id)
+                .where(
+                    t.calls.c.tenant_id == run["tenant_id"],
+                    t.calls.c.execution_id == run["execution_id"],
+                )
+                .union(
+                    select(remote_calls.c.id).where(
+                        remote_calls.c.tenant_id == run["tenant_id"],
+                        remote_calls.c.execution_id == run["execution_id"],
+                    )
+                )
             )
             receipts = list(
                 connection.execute(
@@ -399,6 +423,33 @@ class InvocationService:
                     connection, run["tenant_id"], call_id, attempt_id or call_id
                 )
 
+    def assert_call_limit(self, connection, run):
+        team = run.get("root_spec", run["spec"]).get("team_snapshot")
+        if not team:
+            return
+        count = member_count = 0
+        for table, root_key in ((t.calls, "run_id"), (remote_calls, "root_run_id")):
+            query = (
+                select(func.count())
+                .select_from(table)
+                .where(
+                    table.c.tenant_id == run["tenant_id"],
+                    table.c[root_key] == run["id"],
+                    table.c.status != "rejected",
+                )
+            )
+            count += connection.scalar(query)
+            member_count += connection.scalar(
+                query.where(table.c.execution_id == run.get("execution_id"))
+            )
+        limit = team["definition"]["max_model_calls"] - (
+            run.get("execution_role") != "summary"
+        )
+        if count >= limit:
+            raise PlatformError(429, "team_call_limit", "团队调用次数达到上限。")
+        if member_count >= run["spec"]["max_steps"]:
+            raise PlatformError(429, "task_call_limit", "成员调用次数达到上限。")
+
     def register_call(self, run: dict, call_id: str, *, resume=False) -> None:
         model = run["spec"]["model"]
         with self.db.transaction(f"tenant:{run['tenant_id']}") as connection:
@@ -424,32 +475,7 @@ class InvocationService:
                             409, "call_resume_conflict", "调用状态不允许继续。"
                         )
                     return
-            team = run.get("root_spec", run["spec"]).get("team_snapshot")
-            if team:
-                count_query = (
-                    select(func.count())
-                    .select_from(t.calls)
-                    .where(
-                        t.calls.c.tenant_id == run["tenant_id"],
-                        t.calls.c.run_id == run["id"],
-                        t.calls.c.status != "rejected",
-                    )
-                )
-                count = connection.scalar(count_query)
-                limit = team["definition"]["max_model_calls"]
-                if run.get("execution_role") != "summary":
-                    limit -= 1
-                if count >= limit:
-                    raise PlatformError(
-                        429, "team_call_limit", "团队模型调用次数达到上限。"
-                    )
-                member_count = connection.scalar(
-                    count_query.where(t.calls.c.execution_id == run.get("execution_id"))
-                )
-                if member_count >= run["spec"]["max_steps"]:
-                    raise PlatformError(
-                        429, "task_call_limit", "成员模型调用次数达到上限。"
-                    )
+            self.assert_call_limit(connection, run)
             user = (
                 connection.execute(
                     select(t.users).where(t.users.c.id == run["user_id"])
@@ -516,9 +542,15 @@ class InvocationService:
                         reply.raw_usage,
                     )
                     await asyncio.to_thread(sync_call_receipt, self.platform, receipt)
-                    await asyncio.to_thread(self.event, run, "model.restored", {
-                        "call_id": record["call_id"], "content": reply.content,
-                    })
+                    await asyncio.to_thread(
+                        self.event,
+                        run,
+                        "model.restored",
+                        {
+                            "call_id": record["call_id"],
+                            "content": reply.content,
+                        },
+                    )
                     return reply
                 if action != "dispatch":
                     raise PlatformError(

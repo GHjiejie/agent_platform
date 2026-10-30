@@ -45,6 +45,15 @@ class RemoteDescriptor(WireModel):
     cancellation: bool
     timeout_seconds: int = Field(default=60, ge=1, le=300)
 
+    @field_validator("idempotency", "status_lookup", mode="before")
+    @classmethod
+    def explicit_capability(cls, value):
+        if value is not True:
+            raise ValueError(
+                "Remote execution requires explicit boolean capability support"
+            )
+        return value
+
     @field_validator("max_charge")
     @classmethod
     def bounded_charge(cls, value):
@@ -114,6 +123,13 @@ class RemoteFee(WireModel):
     amount: Money
     currency: Literal["USD"] = "USD"
     final: Literal[True]
+
+    @field_validator("final", mode="before")
+    @classmethod
+    def explicit_final(cls, value):
+        if value is not True:
+            raise ValueError("Fee confirmation must be the boolean true")
+        return value
 
     @field_validator("amount")
     @classmethod

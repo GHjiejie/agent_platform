@@ -298,7 +298,12 @@ class PostgreSQLIsolationTests(unittest.TestCase):
     def test_distributed_team_uses_independent_worker_leases_and_rls(self):
         self._team_with_service_roles(durable=True, distributed=True)
 
-    def _team_with_service_roles(self, *, durable, distributed=False):
+    def test_remote_member_executes_across_workers_with_shared_financial_projections(
+        self,
+    ):
+        self._team_with_service_roles(durable=True, distributed=True, remote=True)
+
+    def _team_with_service_roles(self, *, durable, distributed=False, remote=False):
         from sqlalchemy import update
 
         from agent_platform.infrastructure import tenancy_tables as nt
@@ -315,6 +320,8 @@ class PostgreSQLIsolationTests(unittest.TestCase):
             collaboration_enabled=True,
             collaboration_durable_enabled=durable,
             collaboration_distributed_enabled=distributed,
+            remote_agents_enabled=remote,
+            remote_agent_allowed_origins=("https://remote.example.test",),
             litellm_url=control.url,
             gateway_control_url=control.url,
             gateway_control_key="temporary-acceptance-control-key",
@@ -352,6 +359,91 @@ class PostgreSQLIsolationTests(unittest.TestCase):
             )
         with self.db.tenant_scope(self.tenant_a):
             installed = install(platform, self.fixture.owner)
+            remote_transport = None
+            if remote:
+                from agent_platform.modules.collaboration.templates import DATA, TEXT
+                from agent_platform.modules.costs import CostService
+                from agent_platform.modules.remote_agents.registry import (
+                    RemoteHealthQueue,
+                    RemoteRegistry,
+                )
+                from agent_platform.tests.test_remote_agent_execution import (
+                    TaskTransport,
+                )
+                from agent_platform.tests.test_remote_agent_registry import (
+                    HealthTransport,
+                )
+
+                costs = CostService(self.db, authorize=lambda conn: None)
+                costs.configure_budget(
+                    "platform", "platform", "10", self.fixture.owner["id"]
+                )
+                costs.configure_price(
+                    deployment["id"], "1", "2", self.fixture.owner["id"]
+                )
+                registry = RemoteRegistry(platform)
+                credential = registry.create_credential(
+                    self.fixture.owner,
+                    {
+                        "name": "Remote acceptance",
+                        "token": "temporary-remote-test-secret",
+                    },
+                )
+                registered = registry.register(
+                    self.fixture.owner,
+                    {
+                        "idempotency_key": uuid4().hex,
+                        "descriptor": {
+                            "remote_agent_id": "remote",
+                            "remote_version": "v1",
+                            "name": "Remote normalize",
+                            "task_contracts": [
+                                {
+                                    "task_type": "normalize",
+                                    "input": TEXT,
+                                    "output": DATA,
+                                }
+                            ],
+                            "quote_id": "q1",
+                            "max_charge": "0.02",
+                            "idempotency": True,
+                            "status_lookup": True,
+                            "cancellation": True,
+                        },
+                        "endpoints": [
+                            {
+                                "url": "https://remote.example.test/agent",
+                                "credential_id": credential["id"],
+                            }
+                        ],
+                    },
+                )
+                probe_db = self.sandbox.database(self.sandbox.runtime_urls["worker"])
+                probe_worker = Worker(worker_services(probe_db, settings))
+                probes = RemoteHealthQueue(
+                    probe_worker, transport=HealthTransport(registered)
+                )
+                asyncio.run(probes.execute(probes.claim()))
+                with self.db.read() as conn:
+                    definition = conn.scalar(
+                        select(t.agents.c.collaboration_spec).where(
+                            t.agents.c.id == installed["id"]
+                        )
+                    )
+                definition["members"][0].update(
+                    agent_id=registered["agent_id"], version=1
+                )
+                platform.save_agent(
+                    self.fixture.owner,
+                    {"collaboration_spec": definition},
+                    installed["id"],
+                )
+                platform.publish(self.fixture.owner, installed["id"])
+                remote_transport = TaskTransport("lost")
+                remote_transport.result_value = {
+                    "facts": [],
+                    "missing": ["No source data"],
+                }
             session = platform.create_session(
                 self.fixture.owner, installed["id"], "Sequential team"
             )
@@ -380,13 +472,23 @@ class PostgreSQLIsolationTests(unittest.TestCase):
                 "No business data supplied",
             ]
         )
+        if remote:
+            next(gateway.replies)
         worker_db = self.sandbox.database(self.sandbox.runtime_urls["worker"])
-        worker = Worker(worker_services(worker_db, settings), gateway=gateway)
+        worker = Worker(
+            worker_services(worker_db, settings),
+            gateway=gateway,
+            remote_transport=remote_transport,
+        )
         claimed = worker.claim()
         self.assertEqual(claimed["id"], queued["id"])
         if distributed:
             member_db = self.sandbox.database(self.sandbox.runtime_urls["worker"])
-            member = Worker(worker_services(member_db, settings), gateway=gateway)
+            member = Worker(
+                worker_services(member_db, settings),
+                gateway=gateway,
+                remote_transport=remote_transport,
+            )
 
             async def execute_distributed():
                 parent = asyncio.create_task(worker.execute(claimed))
@@ -417,7 +519,7 @@ class PostgreSQLIsolationTests(unittest.TestCase):
         )
         self.assertEqual(len(result["executions"]), 4)
         self.assertEqual(len(result["artifacts"]), 4)
-        self.assertEqual(len(gateway.calls), 5)
+        self.assertEqual(len(gateway.calls), 4 if remote else 5)
         self.assertGreater(Decimal(result["fees"]["confirmed"]), 0)
         from agent_platform.infrastructure.journal_tables import journal
 
@@ -426,7 +528,10 @@ class PostgreSQLIsolationTests(unittest.TestCase):
         self.assertEqual(len(records), 6 if durable else 0)
         if durable:
             self.assertEqual({record["state"] for record in records}, {"confirmed"})
-            self.assertEqual({record["kind"] for record in records}, {"tool", "model"})
+            self.assertEqual(
+                {record["kind"] for record in records},
+                {"tool", "model", "remote"} if remote else {"tool", "model"},
+            )
             with worker_db.tenant_scope(self.tenant_b), worker_db.read() as connection:
                 self.assertEqual(connection.execute(select(journal)).all(), [])
             for service in ("api", "gateway-sync"):
@@ -437,6 +542,22 @@ class PostgreSQLIsolationTests(unittest.TestCase):
                     restricted.read() as connection,
                 ):
                     connection.execute(select(journal))
+
+        if remote:
+            from agent_platform.infrastructure.remote_call_tables import calls
+
+            self.assertEqual(len(remote_transport.submissions), 1)
+            with self.db.tenant_scope(self.tenant_a):
+                usage = platform.call_records(self.fixture.owner, run_id=queued["id"])
+                remote_rows = [row for row in usage if row["call_kind"] == "remote"]
+                self.assertEqual(len(remote_rows), 1)
+                self.assertEqual(Decimal(remote_rows[0]["cost"]), Decimal("0.01"))
+                dashboard = platform.dashboard(self.fixture.owner)
+                self.assertEqual(
+                    Decimal(dashboard["cost"]), Decimal(result["fees"]["confirmed"])
+                )
+            with worker_db.tenant_scope(self.tenant_b), worker_db.read() as conn:
+                self.assertEqual(conn.execute(select(calls)).all(), [])
 
     def test_all_services_are_non_owner_and_all_tenant_tables_force_rls(self):
         for service, url in self.sandbox.runtime_urls.items():
@@ -746,6 +867,139 @@ class PostgreSQLIsolationTests(unittest.TestCase):
                 )
             )
         self.assertEqual(caught.exception.orig.sqlstate, "23503")
+
+    def test_remote_registry_separates_api_secrets_and_worker_discovery(self):
+        from agent_platform.infrastructure import remote_agent_tables as remote
+        from agent_platform.modules.remote_agents.registry import (
+            RemoteHealthQueue,
+            RemoteRegistry,
+        )
+        from agent_platform.tests.test_remote_agent_registry import (
+            HealthTransport,
+            RemoteAgentRegistryTests,
+        )
+
+        settings = replace(
+            self.platform.settings,
+            remote_agents_enabled=True,
+            remote_agent_allowed_origins=("https://remote.example.test",),
+        )
+        api = Platform(self.db, settings)
+        registry = RemoteRegistry(api)
+        credential = registry.create_credential(
+            self.fixture.owner,
+            {
+                "name": "Acceptance remote",
+                "token": "temporary-remote-pg-credential",
+            },
+        )
+        registration = registry.register(
+            self.fixture.owner, RemoteAgentRegistryTests.body(None, credential)
+        )
+        with (
+            self.assertRaises(DBAPIError) as denied,
+            self.db.tenant_scope(self.tenant_a),
+            self.db.read() as conn,
+        ):
+            conn.execute(select(remote.secrets))
+        self.assertEqual(denied.exception.orig.sqlstate, "42501")
+        db = self.sandbox.database(self.sandbox.runtime_urls["worker"])
+        worker = Worker(
+            worker_services(
+                db, replace(settings, database_url=self.sandbox.runtime_urls["worker"])
+            )
+        )
+        worker_registry = RemoteRegistry(worker.platform)
+        with db.tenant_scope(self.tenant_a), db.read() as conn:
+            self.assertEqual(
+                worker_registry.credential(conn, self.tenant_a, credential["id"]),
+                "temporary-remote-pg-credential",
+            )
+        probes = RemoteHealthQueue(worker, transport=HealthTransport(registration))
+        claim = probes.claim()
+        self.assertIsNotNone(claim)
+        asyncio.run(probes.execute(claim))
+        with db.tenant_scope(self.tenant_a), db.read() as conn:
+            version, endpoints = worker_registry.eligible(
+                conn, self.tenant_a, {"id": registration["id"], "version": 1}
+            )
+            self.assertEqual(version["id"], registration["id"])
+            self.assertEqual(len(endpoints), 1)
+        with db.tenant_scope(self.tenant_b), db.read() as conn:
+            self.assertEqual(conn.execute(select(remote.secrets)).all(), [])
+            with self.assertRaises(PlatformError):
+                worker_registry.credential(conn, self.tenant_b, credential["id"])
+        other = registry.create_credential(
+            self.fixture.context(self.fixture.owner["id"], self.tenant_b),
+            {
+                "name": "Other tenant",
+                "token": "other-temporary-pg-credential",
+            },
+        )
+        with (
+            self.assertRaises(IntegrityError) as invalid,
+            self.db.transaction("tenant:" + self.tenant_a) as conn,
+        ):
+            conn.execute(
+                remote.endpoints.update()
+                .where(remote.endpoints.c.id == endpoints[0]["id"])
+                .values(credential_id=other["id"])
+            )
+        self.assertEqual(invalid.exception.orig.sqlstate, "23503")
+
+    def test_remote_fixed_fees_use_worker_permissions_and_tenant_rls(self):
+        from agent_platform.modules.costs import CostService
+
+        CostService(self.db, authorize=lambda conn: None).configure_budget(
+            "platform",
+            "platform",
+            "1",
+            self.fixture.owner["id"],
+        )
+        self.platform.billing.credit(
+            self.tenant_a,
+            self.fixture.owner["id"],
+            "2",
+            "Acceptance credit",
+            uuid4().hex,
+        )
+        worker = self.sandbox.database(self.sandbox.runtime_urls["worker"])
+        billing = BillingService(worker)
+        call_id = uuid4().hex
+        billing.reserve_fixed(
+            self.tenant_a,
+            self.fixture.owner["id"],
+            "remote-registration",
+            "acceptance-run",
+            call_id,
+            quote_id="quote-1",
+            max_charge="0.200000000001",
+        )
+        fee = {
+            "receipt_id": "receipt-1",
+            "request_id": call_id,
+            "quote_id": "quote-1",
+            "amount": "0.125000000001",
+            "currency": "USD",
+            "final": True,
+        }
+        for _ in range(2):
+            result = billing.settle_fixed(self.tenant_a, call_id, fee)
+            self.assertEqual(Decimal(result["cost"]), Decimal("0.125000000001"))
+        self.assertEqual(
+            Decimal(billing.wallet(self.tenant_a)["balance"]), Decimal("1.874999999999")
+        )
+        with worker.tenant_scope(self.tenant_a), worker.read() as conn:
+            receipt = conn.execute(select(mt.usage_receipts)).mappings().one()
+            self.assertEqual(receipt["source"], "remote_agent")
+            hold = conn.execute(select(mt.cost_holds)).mappings().one()
+            self.assertEqual(hold["charge_kind"], "fixed")
+            self.assertIsNone(hold["deployment_id"])
+        with worker.tenant_scope(self.tenant_b), worker.read() as conn:
+            self.assertEqual(conn.execute(select(mt.usage_receipts)).all(), [])
+            self.assertEqual(conn.execute(select(mt.cost_holds)).all(), [])
+        with self.assertRaises(PlatformError):
+            billing.settle_fixed(self.tenant_b, call_id, fee)
 
     def test_concurrent_wallet_admission_cannot_spend_same_balance_twice(self):
         billing = BillingService(self.db)

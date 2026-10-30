@@ -184,6 +184,7 @@ class Reconcile(StrictModel):
     reason: str = Field(min_length=5, max_length=500)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    fixed_amount: str | None = None
 
 
 class Unblock(StrictModel):

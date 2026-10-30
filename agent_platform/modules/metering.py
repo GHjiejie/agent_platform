@@ -33,7 +33,12 @@ def record_receipt(
     """Immutable source-keyed evidence. Conflicting revisions are preserved too."""
     evidence = dict(raw_usage or {})
     source = evidence.get("usage_source", evidence.get("source", "litellm_gateway"))
-    if source not in {"litellm_gateway", "litellm_logs", "manual_reconciliation"}:
+    if source not in {
+        "litellm_gateway",
+        "litellm_logs",
+        "manual_reconciliation",
+        "remote_agent",
+    }:
         source = "litellm_gateway"
     event_id = str(
         evidence.get("source_event_id")
@@ -112,6 +117,8 @@ def record_receipt(
         if conflict
         else "manual"
         if source == "manual_reconciliation"
+        else "remote_final"
+        if source == "remote_agent"
         else "gateway_estimate",
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,

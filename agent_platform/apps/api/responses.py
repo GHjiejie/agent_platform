@@ -152,6 +152,7 @@ class SessionDetailResponse(SessionResponse):
 
 
 class CallResponse(ResponseModel):
+    call_kind: Literal["model", "remote"] = "model"
     id: str
     tenant_id: str
     user_id: str

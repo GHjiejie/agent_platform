@@ -15,7 +15,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SUPPORTED_RUN_SNAPSHOT_VERSIONS = (1, 2, 3, 4, 5)
+SUPPORTED_RUN_SNAPSHOT_VERSIONS = (1, 2, 3, 4, 5, 6)
 LEGACY_RUN_SNAPSHOT_VERSION = 1
 CURRENT_RUN_SNAPSHOT_VERSION = 2
 

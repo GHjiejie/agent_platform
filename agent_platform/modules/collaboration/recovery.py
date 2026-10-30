@@ -28,7 +28,7 @@ def settle_journal_usage(worker, tenant_id):
                 )
                 .where(
                     journal.c.tenant_id == tenant_id,
-                    journal.c.kind == "model",
+                    journal.c.kind.in_(("model", "remote")),
                     journal.c.state == "confirmed",
                     reservations_table.c.status.in_(("reserved", "unresolved")),
                 )
@@ -43,6 +43,17 @@ def settle_journal_usage(worker, tenant_id):
             output = EvidenceCodec(worker.settings.secret_encryption_key).decode(
                 record["result_ciphertext"], record["result_digest"]
             )
+            if record["kind"] == "remote":
+                from agent_platform.modules.remote_agents.contracts import RemoteStatus
+
+                status = RemoteStatus.model_validate(output)
+                if status.request_id != record["call_id"] or status.fee is None:
+                    continue
+                receipt = worker.platform.billing.settle_fixed(
+                    tenant_id, record["call_id"], status.fee.model_dump()
+                )
+                sync_call_receipt(worker.platform, receipt)
+                continue
             usage = output["raw_usage"]
             if (usage.get("logical_call_id"), usage.get("attempt_id")) != (
                 record["call_id"],
@@ -67,7 +78,7 @@ def settle_journal_usage(worker, tenant_id):
 def requeue_safe_run(worker, connection, run):
     features = run["spec"].get("team_snapshot", {}).get("features", {})
     if not (
-        run["spec"].get("snapshot_schema_version") in (4, 5)
+        run["spec"].get("snapshot_schema_version") in (4, 5, 6)
         and features.get("durable")
         and features.get("recovery")
         and worker.settings.collaboration_recovery_enabled
@@ -95,7 +106,7 @@ def requeue_safe_run(worker, connection, run):
         elif (
             record["state"] == "prepared"
             or record["state"] in {"sent", "unknown"}
-            and record["effect"] == "pure"
+            and (record["effect"] == "pure" or record["kind"] == "remote")
         ):
             continue
         else:

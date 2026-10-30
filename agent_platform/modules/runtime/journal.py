@@ -158,7 +158,7 @@ class DurableJournal:
         return {**record, **values}
 
     def prepare(self, operation_key, kind, request, *, effect="external"):
-        if kind not in {"model", "tool"} or effect not in {
+        if kind not in {"model", "tool", "remote"} or effect not in {
             "pure",
             "observation",
             "external",
@@ -166,7 +166,7 @@ class DurableJournal:
             raise ValueError("Invalid journal operation")
         if not isinstance(operation_key, str) or not 1 <= len(operation_key) <= 160:
             raise ValueError("Invalid journal operation key")
-        if kind == "model" and effect != "external":
+        if kind in {"model", "remote"} and effect != "external":
             raise ValueError("A model request must never be classified as recomputable")
         digest, encrypted = self.codec.encode(request)
         with self.transaction() as connection:
@@ -202,8 +202,8 @@ class DurableJournal:
                 "request_ciphertext": encrypted,
                 "result_digest": None,
                 "result_ciphertext": None,
-                "call_id": uid() if kind == "model" else None,
-                "attempt_id": uid() if kind == "model" else None,
+                "call_id": uid() if kind in {"model", "remote"} else None,
+                "attempt_id": uid() if kind in {"model", "remote"} else None,
                 "idempotency_key": uid(),
                 "owner": self.context.owner,
                 "fence": self.context.fence,

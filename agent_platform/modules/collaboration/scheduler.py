@@ -209,6 +209,22 @@ class CollaborationScheduler:
                     )
                 )
             )
+            from agent_platform.modules.remote_agents.registry import RemoteRegistry
+
+            registry = RemoteRegistry(self.worker.platform)
+            for member in self.team.members:
+                spec = self.snapshot["members"][member.key]["spec"]
+                if not spec.get("remote_snapshot"):
+                    continue
+                try:
+                    registry.eligible(
+                        connection,
+                        self.run["tenant_id"],
+                        spec["remote_ref"],
+                        endpoint_ids=spec["remote_snapshot"]["endpoint_ids"],
+                    )
+                except PlatformError:
+                    available.discard(member.agent_id)
         return {
             member.key
             for member in self.team.members
@@ -593,38 +609,56 @@ class CollaborationScheduler:
                 remaining = max(0, self.run["deadline"] - time.time())
                 timeout = min(timeout, remaining) if timeout else remaining
             async with asyncio.timeout(timeout):
-                result = await execute_agent(
-                    spec, messages, invoke, emit, cancelled, journal=journal
-                )
-                if contract or result_validator:
-                    validate = result_validator or (
-                        lambda value: artifacts.parse_result(value, contract)
+                if spec.get("remote_snapshot"):
+                    import json
+
+                    from agent_platform.modules.remote_agents.invocation import (
+                        RemoteInvocation,
                     )
-                    try:
-                        output = validate(result)
-                    except PlatformError:
-                        # One bounded correction; cumulative model calls are enforced
-                        # by InvocationService even though the graph restarts.
-                        repaired = [
-                            *messages,
-                            {"role": "assistant", "content": result[:32000]},
-                            {
-                                "role": "user",
-                                "content": "输出未通过契约校验。请返回完整、符合指定 schema 的 JSON，不加代码围栏。",
-                            },
-                        ]
-                        result = await execute_agent(
-                            spec,
-                            repaired,
-                            invoke,
-                            emit,
-                            cancelled,
-                            journal=journal,
-                            namespace="repair",
+
+                    if not journal or not task or not contract:
+                        raise PlatformError(
+                            409,
+                            "remote_execution_context_missing",
+                            "远程执行需要持久任务上下文。",
                         )
-                        output = validate(result)
+                    envelope = json.loads(messages[0]["content"].split("\n", 1)[1])
+                    output = await RemoteInvocation(self.worker, context).execute(
+                        task, envelope, contract
+                    )
                 else:
-                    output = result
+                    result = await execute_agent(
+                        spec, messages, invoke, emit, cancelled, journal=journal
+                    )
+                    if contract or result_validator:
+                        validate = result_validator or (
+                            lambda value: artifacts.parse_result(value, contract)
+                        )
+                        try:
+                            output = validate(result)
+                        except PlatformError:
+                            # One bounded correction; cumulative model calls are enforced
+                            # by InvocationService even though the graph restarts.
+                            repaired = [
+                                *messages,
+                                {"role": "assistant", "content": result[:32000]},
+                                {
+                                    "role": "user",
+                                    "content": "输出未通过契约校验。请返回完整、符合指定 schema 的 JSON，不加代码围栏。",
+                                },
+                            ]
+                            result = await execute_agent(
+                                spec,
+                                repaired,
+                                invoke,
+                                emit,
+                                cancelled,
+                                journal=journal,
+                                namespace="repair",
+                            )
+                            output = validate(result)
+                    else:
+                        output = result
             await asyncio.to_thread(self.complete, context, output)
             return output
         except (RunCancelled, asyncio.CancelledError):

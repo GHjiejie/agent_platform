@@ -14,6 +14,7 @@ from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.errors import PlatformError
 from agent_platform.infrastructure.events import configure_notifications
+from agent_platform.infrastructure.remote_call_tables import calls as remote_calls
 from agent_platform.modules.billing.service import reservations_table
 from agent_platform.modules.execution_policy import (
     execution_timeout,
@@ -34,7 +35,13 @@ logger = logging.getLogger(__name__)
 
 
 class Worker:
-    def __init__(self, platform: "Platform | WorkerServices", *, gateway=None):
+    def __init__(
+        self,
+        platform: "Platform | WorkerServices",
+        *,
+        gateway=None,
+        remote_transport=None,
+    ):
         self.platform = platform
         self.db = platform.db
         self.settings = platform.settings
@@ -42,6 +49,7 @@ class Worker:
         # An explicitly injected adapter is only for offline execution fixtures.
         # Production resolves fresh tenant credentials for every external call.
         self.gateway = gateway
+        self.remote_transport = remote_transport
         self.owner = uid()
         self._claim_cursor = ""
         self._recover_cursor = ""
@@ -52,7 +60,10 @@ class Worker:
         self.member_queue = TaskLeaseQueue(self)
         from agent_platform.modules.remote_agents.registry import RemoteHealthQueue
 
-        self.remote_health = RemoteHealthQueue(self)
+        self.remote_health = RemoteHealthQueue(self, transport=remote_transport)
+        from agent_platform.modules.remote_agents.reconciliation import RemoteReconciler
+
+        self.remote_reconciler = RemoteReconciler(self, transport=remote_transport)
         if not self.max_run_cost.is_finite() or self.max_run_cost <= 0:
             raise ValueError("PLATFORM_MAX_RUN_COST must be a finite positive amount")
 
@@ -576,7 +587,10 @@ class Worker:
                 self._close_due_run(connection, run, state, message)
 
         mismatches = [
-            and_(reservations_table.c.status == stored, t.calls.c.status != projected)
+            and_(
+                reservations_table.c.status == stored,
+                func.coalesce(t.calls.c.status, remote_calls.c.status) != projected,
+            )
             for stored, projected in (
                 ("settled", "confirmed"),
                 ("released", "released"),
@@ -601,6 +615,13 @@ class Worker:
                         and_(
                             t.calls.c.id == reservations_table.c.call_id,
                             t.calls.c.tenant_id == reservations_table.c.tenant_id,
+                        ),
+                    )
+                    .outerjoin(
+                        remote_calls,
+                        and_(
+                            remote_calls.c.id == reservations_table.c.call_id,
+                            remote_calls.c.tenant_id == reservations_table.c.tenant_id,
                         ),
                     )
                     .where(
@@ -692,14 +713,31 @@ class Worker:
         tasks: set[asyncio.Task] = set()
         member_tasks: set[asyncio.Task] = set()
         health_tasks: set[asyncio.Task] = set()
+        reconciliation_tasks: set[asyncio.Task] = set()
         active_root_ids: set[str] = set()
         recovered_at = 0.0
         try:
-            while not stop.is_set() or tasks or member_tasks or health_tasks:
+            while (
+                not stop.is_set()
+                or tasks
+                or member_tasks
+                or health_tasks
+                or reconciliation_tasks
+            ):
                 try:
                     if time.monotonic() - recovered_at > 10:
                         await asyncio.to_thread(self.recover)
                         recovered_at = time.monotonic()
+                    if not stop.is_set() and not reconciliation_tasks:
+                        reconciliation = await asyncio.to_thread(
+                            self.remote_reconciler.claim
+                        )
+                        if reconciliation:
+                            job = asyncio.create_task(
+                                self.remote_reconciler.execute(reconciliation)
+                            )
+                            reconciliation_tasks.add(job)
+                            job.add_done_callback(reconciliation_tasks.discard)
                     if not stop.is_set() and not health_tasks:
                         probe = await asyncio.to_thread(self.remote_health.claim)
                         if probe:
@@ -750,15 +788,23 @@ class Worker:
                 except TimeoutError:
                     pass
         except BaseException:
-            for task in tasks | member_tasks | health_tasks:
+            for task in tasks | member_tasks | health_tasks | reconciliation_tasks:
                 task.cancel()
             await asyncio.gather(
-                *tasks, *member_tasks, *health_tasks, return_exceptions=True
+                *tasks,
+                *member_tasks,
+                *health_tasks,
+                *reconciliation_tasks,
+                return_exceptions=True,
             )
             raise
         else:
             # Ordinary SIGTERM stops claims and preserves model usage evidence by
             # allowing existing runs to finish within the Pod's grace period.
             await asyncio.gather(
-                *tasks, *member_tasks, *health_tasks, return_exceptions=True
+                *tasks,
+                *member_tasks,
+                *health_tasks,
+                *reconciliation_tasks,
+                return_exceptions=True,
             )

@@ -1378,6 +1378,62 @@ class APIIntegrationTest(unittest.TestCase):
         self.assertEqual(financial[0]["actor_email"], self.admin["user"]["email"])
         self.assertIn("Receipt TEST-42", financial[0]["details"])
 
+    def test_manual_remote_fee_confirmation_uses_amount_and_platform_finance_authority(
+        self,
+    ):
+        from agent_platform.modules.costs import CostService
+
+        CostService(self.db, authorize=lambda conn: None).configure_budget(
+            "platform",
+            "platform",
+            "1",
+            self.fixture.owner["id"],
+        )
+        billing = self.platform.billing
+        billing.credit(
+            self.tenant,
+            self.fixture.owner["id"],
+            "1",
+            "Remote fixture credit",
+            "fixed-credit",
+        )
+        billing.reserve_fixed(
+            self.tenant,
+            self.fixture.owner["id"],
+            "remote-version",
+            "remote-run",
+            "remote-fee",
+            quote_id="quote-1",
+            max_charge="0.2",
+        )
+        billing.unresolved(self.tenant, "remote-fee", "remote reply unavailable")
+        body = {
+            "action": "confirm",
+            "reason": "verified remote invoice",
+            "fixed_amount": "0.12",
+        }
+        denied = self.request(
+            "POST",
+            "/billing/reservations/remote-fee/resolve",
+            auth=self.login(self.create_user()["email"]),
+            key="fixed-confirm",
+            json=body,
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+        for _ in range(2):
+            response = self.request(
+                "POST",
+                "/billing/reservations/remote-fee/resolve",
+                key="fixed-confirm",
+                json=body,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["charge_kind"], "fixed")
+            self.assertEqual(Decimal(response.json()["cost"]), Decimal("0.12"))
+        wallet = self.request("GET", "/billing/wallet").json()
+        self.assertEqual(Decimal(wallet["balance"]), Decimal("0.88"))
+        self.assertEqual(Decimal(wallet["reserved"]), 0)
+
     def test_manual_confirmation_updates_wallet_usage_and_audit_once(self):
         call_id = self.seed_unresolved_call()
         payload = {

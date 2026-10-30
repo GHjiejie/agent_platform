@@ -283,3 +283,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+ROLE_PRIVILEGES["api"]["remote_agent_calls"] = ("SELECT", "UPDATE")
+ROLE_PRIVILEGES["worker"]["remote_agent_calls"] = ("INSERT", "SELECT", "UPDATE")
+ROLE_PRIVILEGES["maintenance"]["remote_agent_calls"] = ("SELECT",)

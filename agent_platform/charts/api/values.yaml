@@ -48,6 +48,8 @@ config:
   collaborationDurableEnabled: false
   collaborationRecoveryEnabled: false
   collaborationDistributedEnabled: false
+  remoteAgentsEnabled: false
+  remoteAgentAllowedOrigins: []
   collaborationMaxActiveMembers: 8
   collaborationCapacityWaitSeconds: 30
   mode: saas

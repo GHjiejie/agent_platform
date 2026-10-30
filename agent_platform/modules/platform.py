@@ -1137,9 +1137,15 @@ class Platform:
                     member["spec"] = self.freeze_execution_spec(
                         connection, user, member["spec"]
                     )
+                team["features"]["remote"] = any(
+                    member["spec"].get("remote_snapshot")
+                    for member in team["members"].values()
+                )
                 spec["team_snapshot"] = team
                 spec["snapshot_schema_version"] = (
-                    5
+                    6
+                    if team["features"]["remote"]
+                    else 5
                     if team["features"]["distributed"]
                     else 4
                     if team["features"]["durable"]
@@ -1233,18 +1239,21 @@ class Platform:
         cursor: str | None = None,
     ) -> list[dict]:
         """Financial facts override a possibly stale worker display projection."""
-        query = select(t.calls).where(t.calls.c.tenant_id == user["tenant_id"])
+        from agent_platform.modules.remote_agents.projections import call_projection
+
+        calls = call_projection()
+        query = select(calls).where(calls.c.tenant_id == user["tenant_id"])
         if "usage.read_all" not in user.get("capabilities", ()):
-            query = query.where(t.calls.c.user_id == user["id"])
+            query = query.where(calls.c.user_id == user["id"])
         if run_id:
-            query = query.where(t.calls.c.run_id == run_id)
+            query = query.where(calls.c.run_id == run_id)
         if cursor:
             stamp, identifier = self.decode_cursor(cursor)
             query = query.where(
-                (t.calls.c.created_at < stamp)
-                | ((t.calls.c.created_at == stamp) & (t.calls.c.id < identifier))
+                (calls.c.created_at < stamp)
+                | ((calls.c.created_at == stamp) & (calls.c.id < identifier))
             )
-        query = query.order_by(t.calls.c.created_at.desc(), t.calls.c.id.desc())
+        query = query.order_by(calls.c.created_at.desc(), calls.c.id.desc())
         if limit:
             query = query.limit(limit)
         with self.db.read() as connection:
@@ -1274,7 +1283,11 @@ class Platform:
                             if receipt["provider_cost"] is not None
                             else None,
                         )
-                    row["usage_source"] = "litellm_gateway"
+                    row["usage_source"] = (
+                        "remote_agent"
+                        if row["call_kind"] == "remote"
+                        else "litellm_gateway"
+                    )
                     row.pop("raw_usage", None)
                     if "platform.costs.read" not in user.get("capabilities", ()):
                         row.pop("provider_cost", None)
@@ -1322,36 +1335,42 @@ class Platform:
 
     def dashboard(self, user: dict) -> dict:
         """Aggregate in storage, preserving exact money even for local SQLite."""
+        from agent_platform.modules.remote_agents.projections import call_projection
+
+        calls = call_projection()
         receipt = reservations_table
-        joined = t.calls.outerjoin(
+        joined = calls.outerjoin(
             receipt,
-            (receipt.c.tenant_id == t.calls.c.tenant_id)
-            & (receipt.c.call_id == t.calls.c.id),
+            (receipt.c.tenant_id == calls.c.tenant_id)
+            & (receipt.c.call_id == calls.c.id),
         )
-        filters = [t.calls.c.tenant_id == user["tenant_id"]]
+        filters = [calls.c.tenant_id == user["tenant_id"]]
         all_usage = "usage.read_all" in user.get("capabilities", ())
         if not all_usage:
-            filters.append(t.calls.c.user_id == user["id"])
-        cost = func.coalesce(receipt.c.cost, t.calls.c.cost)
+            filters.append(calls.c.user_id == user["id"])
+        cost = func.coalesce(
+            receipt.c.cost,
+            calls.c.cost if self.db.sqlite else cast(calls.c.cost, Numeric(30, 12)),
+        )
         cost_sum = (
             func.exact_sum(cost)
             if self.db.sqlite
             else func.sum(cast(cost, Numeric(30, 12)))
         )
         tokens = func.coalesce(
-            receipt.c.input_tokens, t.calls.c.input_tokens, 0
-        ) + func.coalesce(receipt.c.output_tokens, t.calls.c.output_tokens, 0)
+            receipt.c.input_tokens, calls.c.input_tokens, 0
+        ) + func.coalesce(receipt.c.output_tokens, calls.c.output_tokens, 0)
         confirmed = case(
             (receipt.c.status == "settled", 1),
-            ((receipt.c.id.is_(None)) & (t.calls.c.status == "confirmed"), 1),
+            ((receipt.c.id.is_(None)) & (calls.c.status == "confirmed"), 1),
             else_=0,
         )
         day = (
-            func.strftime("%Y-%m-%d", t.calls.c.created_at, "+8 hours")
+            func.strftime("%Y-%m-%d", calls.c.created_at, "+8 hours")
             if self.db.sqlite
             else func.to_char(
                 func.timezone(
-                    "Asia/Shanghai", cast(t.calls.c.created_at, DateTime(timezone=True))
+                    "Asia/Shanghai", cast(calls.c.created_at, DateTime(timezone=True))
                 ),
                 "YYYY-MM-DD",
             )
@@ -1385,10 +1404,10 @@ class Platform:
             models = [
                 dict(row)
                 for row in connection.execute(
-                    select(t.calls.c.model.label("model"), *columns)
+                    select(calls.c.model.label("model"), *columns)
                     .select_from(joined)
                     .where(*filters)
-                    .group_by(t.calls.c.model)
+                    .group_by(calls.c.model)
                     .order_by(func.count().desc())
                     .limit(100)
                 ).mappings()

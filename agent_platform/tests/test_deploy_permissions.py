@@ -130,6 +130,11 @@ class ComposeStoragePermissionsTests(unittest.TestCase):
         )
         for role, grants in remote.REMOTE_PRIVILEGES.items():
             expected[role].update(grants)
+        calls = import_module(
+            "agent_platform.migrations.versions.0019_remote_agent_calls"
+        )
+        for role, grants in calls.CALL_PRIVILEGES.items():
+            expected[role][calls.calls.name] = grants
         self.assertEqual(expected, ROLE_PRIVILEGES)
 
 

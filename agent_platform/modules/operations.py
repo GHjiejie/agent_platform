@@ -404,11 +404,13 @@ class OperationsService:
         return self._export_user(connection, user, job["scope"], captured=job)
 
     def _generate_export(self, job):
+        from agent_platform.modules.remote_agents.projections import call_projection
+
         with self.db.transaction("tenant:" + job["tenant_id"]) as connection:
             self._export_guard(connection, job)
             self._captured_user(connection, job)
             table, names = (
-                (t.calls, CALL_COLUMNS)
+                (call_projection(), CALL_COLUMNS)
                 if job["kind"] == "calls"
                 else (t.runs, RUN_COLUMNS)
             )
@@ -422,8 +424,8 @@ class OperationsService:
                             (receipt.c.status == "reserved", "running"),
                             (receipt.c.status.is_not(None), receipt.c.status),
                             (
-                                t.calls.c.status.in_(("rejected", "admitting")),
-                                t.calls.c.status,
+                                table.c.status.in_(("rejected", "admitting")),
+                                table.c.status,
                             ),
                             else_="pending_evidence",
                         ).label("status"),
@@ -453,11 +455,11 @@ class OperationsService:
             )
             if job["kind"] == "calls":
                 query = query.select_from(
-                    t.calls.outerjoin(
+                    table.outerjoin(
                         reservations_table,
                         and_(
-                            reservations_table.c.tenant_id == t.calls.c.tenant_id,
-                            reservations_table.c.call_id == t.calls.c.id,
+                            reservations_table.c.tenant_id == table.c.tenant_id,
+                            reservations_table.c.call_id == table.c.id,
                         ),
                     )
                 )

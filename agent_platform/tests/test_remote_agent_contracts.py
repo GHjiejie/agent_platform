@@ -40,7 +40,9 @@ class RemoteAgentContractTests(unittest.TestCase):
             {"max_charge": 0.02},
             {"max_charge": "1000000001"},
             {"idempotency": False},
+            {"idempotency": 1},
             {"status_lookup": False},
+            {"status_lookup": 1.0},
             {"task_contracts": [*values["task_contracts"], *values["task_contracts"]]},
             {"timeout_seconds": 301},
             {"endpoint": "https://arbitrary.test"},
@@ -110,5 +112,6 @@ class RemoteAgentContractTests(unittest.TestCase):
             )
         with self.assertRaises(ValidationError):
             RemoteResult.model_validate({**output, "digest": "0" * 64})
-        with self.assertRaises(ValidationError):
-            RemoteFee.model_validate({**fee, "final": False})
+        for final in (False, 1, 1.0, "true"):
+            with self.subTest(final=final), self.assertRaises(ValidationError):
+                RemoteFee.model_validate({**fee, "final": final})

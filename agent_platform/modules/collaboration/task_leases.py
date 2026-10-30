@@ -198,7 +198,7 @@ def verify_resume(worker, connection, root, lease):
         elif not (
             evidence["state"] == "prepared"
             or evidence["state"] in {"sent", "unknown"}
-            and evidence["effect"] == "pure"
+            and (evidence["effect"] == "pure" or evidence["kind"] == "remote")
         ):
             raise PlatformError(
                 409, "task_output_unknown", "成员调用缺少完整结果证据，已停止且未重发。"
@@ -510,6 +510,7 @@ class TaskController:
             worker.settings,
         )
         self.gateway, self.owner = worker.gateway, worker.owner
+        self.remote_transport = getattr(worker, "remote_transport", None)
         self.run = {
             **claim["root"],
             "owner": claim["lease"]["owner"],

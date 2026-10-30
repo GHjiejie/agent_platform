@@ -7,6 +7,7 @@ from sqlalchemy import select
 from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure.errors import PlatformError
+from agent_platform.infrastructure.remote_call_tables import calls as remote_calls
 from agent_platform.modules.billing.service import reservations_table
 
 
@@ -59,6 +60,21 @@ def detail(platform, user, run_id, task_id=None):
                 )
                 .where(
                     t.calls.c.tenant_id == user["tenant_id"], t.calls.c.run_id == run_id
+                )
+            ).mappings()
+        )
+
+        receipts.extend(
+            connection.execute(
+                select(remote_calls.c.execution_id, reservations_table)
+                .join(
+                    reservations_table,
+                    (remote_calls.c.id == reservations_table.c.call_id)
+                    & (remote_calls.c.tenant_id == reservations_table.c.tenant_id),
+                )
+                .where(
+                    remote_calls.c.tenant_id == user["tenant_id"],
+                    remote_calls.c.root_run_id == run_id,
                 )
             ).mappings()
         )

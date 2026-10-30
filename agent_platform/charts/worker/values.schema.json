@@ -234,6 +234,17 @@
         },
         "collaborationRecoveryEnabled": {
           "type": "boolean"
+        },
+        "remoteAgentsEnabled": {
+          "type": "boolean"
+        },
+        "remoteAgentAllowedOrigins": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https://"
+          },
+          "uniqueItems": true
         }
       },
       "required": [
