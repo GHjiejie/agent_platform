@@ -1,0 +1,66 @@
+{
+  "partial_report": {
+    "mode": "live_gateway",
+    "model": "wylon-deepseek-v4.1-flash",
+    "prices_per_million": {
+      "input": "0.30",
+      "output": "1.20"
+    },
+    "maximum_platform_cost": "1",
+    "cases": [
+      {
+        "case": "complete_numbers",
+        "execution": "single",
+        "status": "succeeded",
+        "answer": "{\"total\":30,\"largest\":\"A\",\"missing\":[]}",
+        "quality": {
+          "valid_json_contract": true,
+          "correct_fields": 3,
+          "total_fields": 3
+        },
+        "elapsed_seconds": 2.0847,
+        "model_calls": 1,
+        "confirmed_cost": "0.000125100000",
+        "pending_calls": 0,
+        "error": ""
+      },
+      {
+        "case": "complete_numbers",
+        "execution": "template",
+        "status": "succeeded",
+        "answer": "{\"total\":30,\"largest\":\"A\",\"missing\":[]}",
+        "quality": {
+          "valid_json_contract": true,
+          "correct_fields": 3,
+          "total_fields": 3
+        },
+        "elapsed_seconds": 3.1481,
+        "model_calls": 3,
+        "confirmed_cost": "0.000607500000",
+        "pending_calls": 0,
+        "error": ""
+      }
+    ],
+    "limitations": "Synthetic task set and configured prices; no claim of general model quality or provider invoice equivalence."
+  },
+  "assessment": {
+    "reason": "Evaluation process interrupted; first two completed cases retained; incomplete output not counted as a quality result.",
+    "confirmed_prior_cases_cost": "0.000732600000",
+    "interrupted_call_reference_cost": "0.0027873",
+    "remaining_evaluation_budget": "0.996480100000",
+    "correlation": "Unique successful gateway log for configured key and model in UTC window 2026-11-02 02:03:48 through 02:03:55; no automatic request replay.",
+    "gateway_evidence": {
+      "request_id": "resp_bGl0ZWxsbTpjdXN0b21fbGxtX3Byb3ZpZGVyOm9wZW5haTttb2RlbF9pZDo5ZGU5YWQ1MmYzZjljZmU2NDJiOTRkNmJkMGUxNTc2ZWRkMzBkN2VkMWVlNWM4YWU5N2Q1NjllYTgwZGFhMzI3O3Jlc3BvbnNlX2lkOnJlc3BfYTY4NzFhZGM1YzZiNzM0OQ==",
+      "model": "openai/deepseek-ai/DeepSeek-V4.1-Flash",
+      "model_group": "wylon-deepseek-v4.1-flash",
+      "startTime": "2026-11-02T02:03:48.922+00:00",
+      "endTime": "2026-11-02T02:04:35.202+00:00",
+      "status": "success",
+      "prompt_tokens": 1099,
+      "completion_tokens": 2048,
+      "total_tokens": 3147,
+      "spend": 0.0,
+      "end_user": ""
+    }
+  }
+}

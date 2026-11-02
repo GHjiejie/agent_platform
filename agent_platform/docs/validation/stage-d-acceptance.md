@@ -31,8 +31,8 @@
 
 该结果证明 D1、D2 的工程实现和确定性验收完成。`release_gate_passed` 是后端验收脚本的结果字段，不包含 C5 效果评估或生产部署审批。
 
-## 上线依赖
+## 后续 C5 验收更新（2026-11-02）
 
-C5 的真实单 Agent / 固定团队 / 动态团队质量、成本和延迟对比尚未执行。当前环境没有 `COLLABORATION_EVAL_GATEWAY_URL`、`COLLABORATION_EVAL_MODEL`、`COLLABORATION_EVAL_API_KEY`、`COLLABORATION_EVAL_INPUT_PRICE`、`COLLABORATION_EVAL_OUTPUT_PRICE`、`COLLABORATION_EVAL_MAX_COST`，工作区也没有可供该评估使用的本地环境文件。需要专用测试网关、模型、凭据来源、报价及总费用上限后，使用操作手册中的评估命令完成剩余门禁。
+2026-10-30 的检查仅覆盖工作树环境，未核对原项目配置；后来已确认原项目 `agent_platform/.env` 包含可用网关、凭据、模型、参考价和费用上限。2026-11-02 使用该配置完成九组真实对比，27 个字段全部正确、无待确认费用。单 Agent 在该简单任务集的成本和延迟最低，因此仍作为默认；团队由用户显式选择。
 
-所有高级功能继续默认关闭；工程测试通过不代表模型回答质量提升、生产部署完成或整个 A–D 目标已完成。
+详见 [C5 真实模型验收](c5-live-evaluation-20261102.md)。C5 与阶段 D 的工程和效果验收均已完成，功能开关仍默认关闭；没有修改部署，也不据此宣称普遍质量提升。

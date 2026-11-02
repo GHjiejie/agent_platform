@@ -14,6 +14,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
+from dotenv import dotenv_values
 from sqlalchemy import select
 
 from agent_platform.apps.worker.main import Worker
@@ -115,6 +116,7 @@ def evaluate(
     max_cost,
     report,
     evidence_mode="live_gateway",
+    max_output_tokens=8192,
 ):
     fixture = APIIntegrationTest()
     fixture.setUp()
@@ -123,6 +125,7 @@ def evaluate(
         "model": model,
         "prices_per_million": {"input": str(input_price), "output": str(output_price)},
         "maximum_platform_cost": str(max_cost),
+        "max_output_tokens_per_call": max_output_tokens,
         "cases": [],
         "limitations": "Synthetic task set and configured prices; no claim of general model quality or provider invoice equivalence.",
     }
@@ -158,12 +161,12 @@ def evaluate(
                 "input_price": str(input_price),
                 "output_price": str(output_price),
                 "context_window": 32768,
-                "max_output_tokens": 2048,
+                "max_output_tokens": max_output_tokens,
             },
         )
         common = {
             "model_id": model_row["id"],
-            "max_tokens": 2048,
+            "max_tokens": max_output_tokens,
             "max_steps": 3,
             "temperature": 1,
             "tools": [],
@@ -301,22 +304,53 @@ def evaluate(
         fixture.tearDown()
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--gateway-url", required=True)
-    parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        help="Read an explicit platform .env without loading deployment database settings",
+    )
+    parser.add_argument("--gateway-url")
+    parser.add_argument("--model")
     parser.add_argument("--api-key-env", default="COLLABORATION_EVAL_API_KEY")
-    parser.add_argument("--input-price", type=Decimal, required=True)
-    parser.add_argument("--output-price", type=Decimal, required=True)
-    parser.add_argument("--max-cost", type=Decimal, required=True)
+    parser.add_argument("--input-price", type=Decimal)
+    parser.add_argument("--output-price", type=Decimal)
+    parser.add_argument("--max-cost", type=Decimal)
+    parser.add_argument("--max-output-tokens", type=int, default=8192)
     parser.add_argument("--report", type=Path, required=True)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    values = {}
+    if args.env_file:
+        if not args.env_file.is_file():
+            parser.error("The selected environment file does not exist")
+        values = dotenv_values(args.env_file)
+    for field, variable, convert in (
+        ("gateway_url", "PLATFORM_LITELLM_URL", str),
+        ("model", "PLATFORM_DEFAULT_MODEL", str),
+        ("input_price", "PLATFORM_DEFAULT_MODEL_INPUT_PRICE", Decimal),
+        ("output_price", "PLATFORM_DEFAULT_MODEL_OUTPUT_PRICE", Decimal),
+        ("max_cost", "PLATFORM_MAX_RUN_COST", Decimal),
+    ):
+        if getattr(args, field) is None:
+            if not values.get(variable):
+                parser.error(
+                    f"Provide --{field.replace('_', '-')} or {variable} in --env-file"
+                )
+            try:
+                setattr(args, field, convert(values[variable]))
+            except ArithmeticError:
+                parser.error(f"Invalid numeric setting: {variable}")
+    if not 128 <= args.max_output_tokens <= 16384:
+        parser.error("Evaluation output tokens must be between 128 and 16384")
     if not all(
         value.is_finite() and value > 0
         for value in (args.input_price, args.output_price, args.max_cost)
     ):
         parser.error("Prices and total evaluation budget must be finite and positive")
-    key = os.getenv(args.api_key_env)
+    key = os.getenv(args.api_key_env) or values.get(args.api_key_env)
+    if not key and args.api_key_env == "COLLABORATION_EVAL_API_KEY":
+        key = values.get("PLATFORM_LITELLM_KEY")
     if not key:
         parser.error("The configured API key environment variable is empty")
     if args.report.exists():
@@ -331,6 +365,7 @@ def main():
         output_price=args.output_price,
         max_cost=args.max_cost,
         report=args.report,
+        max_output_tokens=args.max_output_tokens,
     )
     print(f"Saved {len(results['cases'])} measured case results to {args.report}")
     return (

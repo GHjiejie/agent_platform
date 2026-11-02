@@ -1,6 +1,6 @@
 # 团队协作操作与验收
 
-本文对应阶段 B：同组织已发布成员、固定任务模板、一个 Worker 按依赖顺序执行。一次提问创建一个主 Run，成员与汇总使用独立执行记录，主会话只保存一条最终答案。阶段 C 已提供动态规划、并行及受控续跑实现，默认关闭，尚待真实模型质量、费用和耗时评估。下文先说明阶段 B 的默认行为，再列出阶段 C 的启用条件。
+本文对应阶段 B：同组织已发布成员、固定任务模板、一个 Worker 按依赖顺序执行。一次提问创建一个主 Run，成员与汇总使用独立执行记录，主会话只保存一条最终答案。阶段 C 已提供动态规划、并行及受控续跑实现，默认关闭；2026-11-02 已完成真实模型质量、费用和耗时评估，简单任务仍以单 Agent 为默认。下文先说明阶段 B 的默认行为，再列出阶段 C 的启用条件。
 
 ## 开启与准备
 
@@ -60,7 +60,7 @@ PostgreSQL 需要一次性验收数据库 `agent_platform_acceptance[_suffix]`�
 
 ## 阶段 C：受控启用与恢复边界
 
-本次提交包含 C1–C4 实现与 C5 的确定性验证、评估脚本；不代表 C5 已全部验收，也没有修改部署环境。启用前必须使用迁移身份升级到 `0015_execution_checkpoints`，同时更新 API、Worker 和权限矩阵。新增加密日志与检查点仅允许 Worker 读写及维护角色执行规定的清理操作，API 与 gateway-sync 不可读取其原文。
+C1–C4 实现、C5 确定性验证和真实模型评估均已完成，证据见 [C5 验收记录](validation/c5-live-evaluation-20261102.md)；没有修改部署环境。启用前必须使用迁移身份升级到 `0015_execution_checkpoints`，同时更新 API、Worker 和权限矩阵。新增加密日志与检查点仅允许 Worker 读写及维护角色执行规定的清理操作，API 与 gateway-sync 不可读取其原文。
 
 API 与 Worker 使用一致的以下配置；组织协作开关仍需开启：
 
@@ -98,11 +98,21 @@ python -m unittest agent_platform.tests.test_collaboration_dynamic agent_platfor
 
 恢复测试使用独立子进程在发送前、发送后、收到响应后及任务确认后强制退出，并验证并行分支恢复、观察结果复用、撤权、取消和 SSE 游标。PostgreSQL 的 `test_durable_team_journal_uses_worker_only_permissions_and_rls` 另验证真实服务身份下的持久执行与权限隔离。
 
-## 阶段 C：真实模型评估（待执行）
+## 阶段 C：真实模型评估（2026-11-02 已完成）
 
 评估脚本在临时测试组织中使用同一模型比较单 Agent、固定团队和动态团队，覆盖完整数据、缺失数据及含干扰指令的输入，共九次运行。所有运行共享一个总费用预算；记录结构化答案得分、模型调用次数、配置报价下的费用、待确认调用及耗时。出现未知费用时停止继续测试。确定性网关仅检验评估脚本本身，不能替代真实质量结果。
 
 配置测试网关与专用密钥环境变量后，在项目根目录执行（报价按每百万 token，金额单位与网关账务约定一致）：
+
+已有平台配置时可以直接指定原项目的 `.env`，不需要复制密钥到工作树或改名为 `COLLABORATION_EVAL_*`。脚本只提取网关 URL、受限运行密钥、默认模型、输入/输出参考价及费用上限，不加载配置中的部署数据库或修改现有组织数据。显式命令行参数优先；文件中的 `PLATFORM_MAX_RUN_COST` 在评估中作为整轮累计上限，默认每次调用最多输出 8192 Token（可用 `--max-output-tokens` 调整），为推理模型的计划输出保留空间。
+
+```bash
+python -m agent_platform.tests.collaboration_evaluation \
+  --env-file /absolute/path/to/agent_platform/agent_platform/.env \
+  --report /tmp/collaboration-evaluation.json
+```
+
+也可以使用独立评估环境变量：
 
 ```bash
 python -m agent_platform.tests.collaboration_evaluation \
@@ -115,12 +125,12 @@ python -m agent_platform.tests.collaboration_evaluation \
   --report /tmp/collaboration-evaluation.json
 ```
 
-报告路径必须不存在，避免覆盖验收证据。测试仅发送合成任务数据；总费用约束按配置报价计算，不等同于供应商最终发票保证。当前未运行真实模型评估，团队继续由用户显式选择，四个高级功能开关保持默认关闭。完成评估并核对结果前，不将阶段 C 标记为全部完成。
+报告路径必须不存在，避免覆盖验收证据。测试仅发送合成任务数据；总费用约束按配置报价计算，不等同于供应商最终发票保证。真实模型评估已完成九组，质量字段全部正确且无待确认费用。单 Agent 在该任务集上的费用和延迟最低，因此团队继续由用户显式选择，四个高级功能开关保持默认关闭。完整结果与中断尝试的费用核查见 [C5 验收记录](validation/c5-live-evaluation-20261102.md)。
 
 
 ## 阶段 D1：跨 Worker 成员任务（已通过工程验证，默认关闭）
 
-`PLATFORM_COLLABORATION_DISTRIBUTED_ENABLED=false` 控制跨 Worker 调度。API 与 Worker 必须同时使用支持快照版本 5 的程序，并完成 `0016_member_task_leases` 迁移；开启时还必须开启持久执行日志。该开关由平台配置，组织协作权限与根运行预算仍生效。C5 和阶段 D 全部验收前不得作为默认部署配置启用。
+`PLATFORM_COLLABORATION_DISTRIBUTED_ENABLED=false` 控制跨 Worker 调度。API 与 Worker 必须同时使用支持快照版本 5 的程序，并完成 `0016_member_task_leases` 迁移；开启时还必须开启持久执行日志。该开关由平台配置，组织协作权限与根运行预算仍生效。C5 与阶段 D 工程验收均已完成，仍不自动修改默认部署配置。
 
 根 Worker 继续持有主 Run 租约、生成计划、释放依赖和汇总结果；成员 Worker 从 `agent_tasks` / `agent_task_leases` 领取就绪任务，不创建子 Session 或子 Run。每台 Worker 的根任务池和成员池分别最多 `PLATFORM_WORKER_CONCURRENCY` 个任务，等待成员的根任务不会占用成员池。每个团队仍最多两个并行成员，组织活跃成员总上限仍统一限制本地与跨 Worker 执行。
 

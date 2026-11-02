@@ -1,13 +1,17 @@
 """Test the evaluation harness without claiming this is real model quality data."""
 
+import io
 import json
+import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from decimal import Decimal
 from pathlib import Path
+from unittest.mock import patch
 
 from agent_platform.modules.runtime.gateway import GatewayEvent, ModelReply
-from agent_platform.tests.collaboration_evaluation import evaluate, score
+from agent_platform.tests.collaboration_evaluation import evaluate, main, score
 
 
 class DeterministicEvaluatorGateway:
@@ -53,6 +57,79 @@ class DeterministicEvaluatorGateway:
 
 
 class CollaborationEvaluationTests(unittest.TestCase):
+    def test_explicit_platform_environment_file_supplies_live_config_without_database_loading(
+        self,
+    ):
+        with tempfile.TemporaryDirectory() as folder:
+            env = Path(folder) / "platform.env"
+            env.write_text(
+                "PLATFORM_LITELLM_URL=http://127.0.0.1:4000/v1\n"
+                "PLATFORM_LITELLM_KEY=fixture-secret\n"
+                "PLATFORM_DEFAULT_MODEL=configured-model\n"
+                "PLATFORM_DEFAULT_MODEL_INPUT_PRICE=0.30\n"
+                "PLATFORM_DEFAULT_MODEL_OUTPUT_PRICE=1.20\n"
+                "PLATFORM_MAX_RUN_COST=1\n"
+                "PLATFORM_DATABASE_URL=must-not-load-deployment-database\n"
+            )
+            stream = io.StringIO()
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "agent_platform.tests.collaboration_evaluation.Gateway"
+                ) as gateway,
+                patch("agent_platform.tests.collaboration_evaluation.evaluate") as run,
+                redirect_stdout(stream),
+            ):
+                run.return_value = {"cases": [{"status": "succeeded"}] * 9}
+                self.assertEqual(
+                    main(
+                        [
+                            "--env-file",
+                            str(env),
+                            "--max-cost",
+                            "0.75",
+                            "--report",
+                            str(Path(folder) / "report.json"),
+                        ]
+                    ),
+                    0,
+                )
+                gateway.assert_called_once_with(
+                    "http://127.0.0.1:4000/v1", "fixture-secret", timeout=90
+                )
+                values = run.call_args.kwargs
+                self.assertEqual(values["model"], "configured-model")
+                self.assertEqual(values["input_price"], Decimal("0.30"))
+                self.assertEqual(values["output_price"], Decimal("1.20"))
+                self.assertEqual(values["max_cost"], Decimal("0.75"))
+                self.assertEqual(values["max_output_tokens"], 8192)
+                self.assertNotIn("PLATFORM_DATABASE_URL", os.environ)
+            self.assertNotIn("fixture-secret", stream.getvalue())
+
+    def test_incomplete_environment_file_fails_before_model_client_creation(self):
+        with tempfile.TemporaryDirectory() as folder:
+            env = Path(folder) / "platform.env"
+            env.write_text("PLATFORM_LITELLM_KEY=fixture-secret\n")
+            errors = io.StringIO()
+            with (
+                patch(
+                    "agent_platform.tests.collaboration_evaluation.Gateway"
+                ) as gateway,
+                redirect_stderr(errors),
+                self.assertRaises(SystemExit),
+            ):
+                main(
+                    [
+                        "--env-file",
+                        str(env),
+                        "--report",
+                        str(Path(folder) / "report.json"),
+                    ]
+                )
+            gateway.assert_not_called()
+            self.assertIn("PLATFORM_LITELLM_URL", errors.getvalue())
+            self.assertNotIn("fixture-secret", errors.getvalue())
+
     def test_quality_score_rejects_malformed_and_incorrect_answers(self):
         expected = {"total": 30, "largest": "A", "missing": []}
         self.assertEqual(score("invented text", expected)["correct_fields"], 0)
