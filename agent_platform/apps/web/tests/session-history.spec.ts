@@ -41,6 +41,26 @@ async function deletionFixture(page: Page, options: { pending?: Promise<void>; f
   return { ...mock, deleteCount: () => deletes };
 }
 
+async function batchFixture(page: Page, options: { pending?: Promise<void>; failItemOnce?: boolean; failRequestOnce?: boolean } = {}) {
+  const mock = await fixture(page);
+  let items = [saved, { ...saved, id: "history-two", title: "产品介绍续聊" }, { ...saved, id: "history-other", title: "会议纪要" }];
+  const batches: string[][] = [];
+  await page.route("**/api/v2/tenants/team-a/sessions", (route) => route.fulfill({ json: { items } }));
+  await page.route("**/api/v2/tenants/team-a/sessions/history", (route) => route.fulfill({ json: saved }));
+  await page.route("**/api/v2/tenants/team-a/sessions/batch-delete", async (route) => {
+    const body: { session_ids: string[] } = route.request().postDataJSON();
+    batches.push([...body.session_ids]);
+    await options.pending;
+    if (options.failRequestOnce && batches.length === 1) return route.fulfill({ status: 503, json: { error: { code: "temporary_error", message: "批量删除暂时不可用" } } });
+    const failed = options.failItemOnce && batches.length === 1 && body.session_ids.includes("history-two")
+      ? [{ id: "history-two", code: "session_busy", message: "会话仍在运行，请先停止生成或等待运行结束后再删除。" }] : [];
+    const deleted_ids = body.session_ids.filter((id) => !failed.some((item) => item.id === id));
+    items = items.filter((item) => !deleted_ids.includes(item.id));
+    return route.fulfill({ json: { deleted_ids, failed } });
+  });
+  return { ...mock, batches };
+}
+
 test("历史对话直接导出已保存问答，保留当前草稿并可继续打开会话", async ({ page }, info) => {
   const mock = await fixture(page);
   let reads = 0;
@@ -163,6 +183,11 @@ test("窄屏长标题仍可导出和搜索，不触发打开会话或横向溢�
   await page.screenshot({ path: info.outputPath("session-delete-mobile.png"), animations: "disabled" });
   await page.getByRole("button", { name: "取消", exact: true }).click();
   await expect(dialog).toBeVisible();
+  await dialog.getByRole("checkbox", { name: "全选当前结果", exact: true }).check();
+  await dialog.getByRole("button", { name: "批量删除", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "批量删除对话", exact: true })).toContainText(title);
+  await page.screenshot({ path: info.outputPath("session-batch-mobile.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "取消", exact: true }).click();
   await page.getByRole("textbox", { name: "搜索历史对话", exact: true }).fill("没有相关内容");
   await expect(page.getByText("没有找到相关对话，试试其他关键词。", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -273,5 +298,110 @@ test("运行中拒绝删除时保留确认弹窗，运行结束后可重试", as
   await expect(page.getByRole("dialog", { name: "历史对话", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "打开对话：产品介绍怎么写？", exact: true })).toHaveCount(0);
   expect(mock.deleteCount()).toBe(2);
+  expect(mock.errors).toEqual([]);
+});
+
+test("批量勾选和取消保留选择，切换搜索条件后清空隐藏项", async ({ page }) => {
+  const mock = await batchFixture(page);
+  await page.goto("/#playground?tenant=team-a");
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await expect(page.getByRole("button", { name: "批量删除", exact: true })).toBeDisabled();
+  await page.getByRole("checkbox", { name: "选择对话：产品介绍怎么写？", exact: true }).check();
+  await expect(page.getByRole("checkbox", { name: "全选当前结果", exact: true })).toHaveJSProperty("indeterminate", true);
+  await page.getByRole("checkbox", { name: "选择对话：产品介绍续聊", exact: true }).check();
+  await expect(page.getByText("已选 2 条", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "批量删除", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "批量删除对话", exact: true });
+  await expect(confirmation).toContainText("产品介绍怎么写？");
+  await expect(confirmation).toContainText("产品介绍续聊");
+  await expect(confirmation).not.toContainText("会议纪要");
+  await confirmation.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByRole("checkbox", { name: "选择对话：产品介绍怎么写？", exact: true })).toBeChecked();
+  await page.getByRole("textbox", { name: "搜索历史对话", exact: true }).fill("会议");
+  await expect(page.getByText("已选 0 条", { exact: true })).toBeVisible();
+  await page.getByRole("checkbox", { name: "全选当前结果", exact: true }).check();
+  await expect(page.getByRole("checkbox", { name: "选择对话：会议纪要", exact: true })).toBeChecked();
+  await page.getByRole("textbox", { name: "搜索历史对话", exact: true }).fill("");
+  await expect(page.getByRole("button", { name: "批量删除", exact: true })).toBeDisabled();
+  expect(mock.batches).toEqual([]);
+  expect(mock.errors).toEqual([]);
+});
+
+test("批量删除只处理搜索结果并阻止重复提交，其他草稿和会话保留", async ({ page }, info) => {
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const mock = await batchFixture(page, { pending });
+  await page.goto("/#playground?tenant=team-a");
+  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息", exact: true });
+  await input.fill("保留批量删除之外的草稿");
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await page.getByRole("textbox", { name: "搜索历史对话", exact: true }).fill("产品");
+  await page.getByRole("checkbox", { name: "全选当前结果", exact: true }).check();
+  await page.screenshot({ path: info.outputPath("session-batch-desktop.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "批量删除", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "批量删除对话", exact: true });
+  const confirm = confirmation.getByRole("button", { name: "确认删除 2 条", exact: true });
+  await confirm.click();
+  await expect(confirm).toBeDisabled();
+  await expect(confirmation.getByRole("button", { name: "取消", exact: true })).toBeDisabled();
+  await confirm.evaluate((element: HTMLButtonElement) => element.click());
+  expect(mock.batches).toEqual([["history", "history-two"]]);
+  release();
+  await expect(page.getByRole("region", { name: "批量删除结果", exact: true })).toContainText("已删除 2 条对话。");
+  await page.getByRole("textbox", { name: "搜索历史对话", exact: true }).fill("");
+  await expect(page.getByRole("button", { name: "打开对话：会议纪要", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开对话：产品介绍怎么写？", exact: true })).toHaveCount(0);
+  await expect(page.getByText("已选 0 条", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(input).toHaveValue("保留批量删除之外的草稿");
+  expect(mock.errors).toEqual([]);
+});
+
+test("批量部分成功保留失败项，仅重试未删除会话，当前会话成功后清理消息", async ({ page }, info) => {
+  const mock = await batchFixture(page, { failItemOnce: true });
+  await page.goto("/#playground?session=history&tenant=team-a");
+  await expect(page.getByRole("article", { name: "你的消息", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await page.getByRole("checkbox", { name: "选择对话：产品介绍怎么写？", exact: true }).check();
+  await page.getByRole("checkbox", { name: "选择对话：产品介绍续聊", exact: true }).check();
+  await page.getByRole("button", { name: "批量删除", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除 2 条", exact: true }).click();
+  const result = page.getByRole("region", { name: "批量删除结果", exact: true });
+  await expect(result).toContainText("已删除 1 条对话，1 条未删除。");
+  await expect(result).toContainText("产品介绍续聊");
+  await expect(result).toContainText("会话仍在运行");
+  await expect(page.getByRole("dialog", { name: "历史对话", exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "选择对话：产品介绍续聊", exact: true })).toBeChecked();
+  await expect(page.getByRole("article")).toHaveCount(0);
+  expect(new URLSearchParams(new URL(page.url()).hash.split("?")[1]).has("session")).toBe(false);
+  await page.screenshot({ path: info.outputPath("session-batch-partial.png"), animations: "disabled" });
+  await result.getByRole("button", { name: "重试未删除项", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "批量删除对话", exact: true });
+  await expect(confirmation).not.toContainText("产品介绍怎么写？");
+  await confirmation.getByRole("button", { name: "确认删除 1 条", exact: true }).click();
+  await expect(result).toContainText("已删除 1 条对话。");
+  expect(mock.batches).toEqual([["history", "history-two"], ["history-two"]]);
+  await expect(page.getByRole("button", { name: "打开对话：会议纪要", exact: true })).toBeVisible();
+  await expect(page.getByText("已选 0 条", { exact: true })).toBeVisible();
+  expect(mock.errors).toEqual([]);
+});
+
+test("批量请求失败保留所选会话和确认内容，取消或重试均可恢复", async ({ page }) => {
+  const mock = await batchFixture(page, { failRequestOnce: true });
+  await page.goto("/#playground?tenant=team-a");
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await page.getByRole("checkbox", { name: "选择对话：产品介绍怎么写？", exact: true }).check();
+  await page.getByRole("checkbox", { name: "选择对话：产品介绍续聊", exact: true }).check();
+  await page.getByRole("button", { name: "批量删除", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除 2 条", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "批量删除对话", exact: true });
+  await expect(confirmation.getByRole("alert")).toContainText("批量删除暂时不可用");
+  await confirmation.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByText("已选 2 条", { exact: true })).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "选择对话：产品介绍怎么写？", exact: true })).toBeChecked();
+  await page.getByRole("button", { name: "批量删除", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除 2 条", exact: true }).click();
+  await expect(page.getByRole("region", { name: "批量删除结果", exact: true })).toContainText("已删除 2 条对话。");
+  expect(mock.batches).toEqual([["history", "history-two"], ["history", "history-two"]]);
   expect(mock.errors).toEqual([]);
 });

@@ -127,6 +127,17 @@ class SessionDeleteResponse(ResponseModel):
     deleted: Literal[True]
 
 
+class SessionDeleteFailure(ResponseModel):
+    id: str
+    code: Literal["not_found", "session_busy"]
+    message: str
+
+
+class SessionBatchDeleteResponse(ResponseModel):
+    deleted_ids: list[str]
+    failed: list[SessionDeleteFailure]
+
+
 class MessageResponse(ResponseModel):
     id: str
     run_id: str

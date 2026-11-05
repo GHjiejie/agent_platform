@@ -1,7 +1,7 @@
 """Validated, deliberately bounded API requests."""
 
 from decimal import Decimal, InvalidOperation
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -157,6 +157,17 @@ class AgentPatch(StrictModel):
 class SessionCreate(StrictModel):
     agent_id: str = Field(min_length=1, max_length=64)
     title: str | None = Field(default=None, max_length=160)
+
+
+class SessionBatchDelete(StrictModel):
+    session_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        min_length=1, max_length=200
+    )
+
+    @field_validator("session_ids")
+    @classmethod
+    def unique_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(value))
 
 
 class RunCreate(StrictModel):

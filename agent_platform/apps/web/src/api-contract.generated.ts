@@ -90,7 +90,10 @@ export type ResumeEntry = { "interruptId": string; "metadata"?: Record<string, u
 export type RunCreate = { "message": string; "model_id"?: string | null; "reasoning_effort"?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | null; };
 export type RunResponse = { "agent_name": string; "cost"?: string; "created_at": string; "error": string; "execution_mode"?: "single" | "team"; "finished_at": string | null; "id": string; "message"?: string; "model_alias": string | null; "model_id": string | null; "outcome"?: string | null; "session_id": string; "status": string; "tenant_id": string; "user_id": string; };
 export type RunsResponse = { "items": Array<RunResponse>; "next_cursor": string | null; };
+export type SessionBatchDelete = { "session_ids": Array<string>; };
+export type SessionBatchDeleteResponse = { "deleted_ids": Array<string>; "failed": Array<SessionDeleteFailure>; };
 export type SessionCreate = { "agent_id": string; "title"?: string | null; };
+export type SessionDeleteFailure = { "code": "not_found" | "session_busy"; "id": string; "message": string; };
 export type SessionDeleteResponse = { "deleted": true; "id": string; };
 export type SessionDetailResponse = { "agent_id": string; "artifacts": Array<ArtifactResponse>; "created_at": string; "id": string; "messages": Array<MessageResponse>; "reasoning"?: Array<ReasoningResponse>; "runs": Array<RunResponse>; "tenant_id": string; "title": string; "user_id": string; };
 export type SessionResponse = { "agent_id": string; "created_at": string; "id": string; "tenant_id": string; "title": string; "user_id": string; };
@@ -140,6 +143,7 @@ export type ApiResponseByOperation = {
   "GET /api/v1/runs/{run_id}/tasks/{task_id}": CollaborationDetail;
   "GET /api/v1/sessions": SessionsResponse;
   "POST /api/v1/sessions": SessionResponse;
+  "POST /api/v1/sessions/batch-delete": SessionBatchDeleteResponse;
   "DELETE /api/v1/sessions/{session_id}": SessionDeleteResponse;
   "GET /api/v1/sessions/{session_id}": SessionDetailResponse;
   "POST /api/v1/sessions/{session_id}/runs": RunResponse;
@@ -176,6 +180,7 @@ export type ApiResponseByOperation = {
   "GET /api/v2/tenants/{tenant_id}/runs/{run_id}/tasks/{task_id}": CollaborationDetail;
   "GET /api/v2/tenants/{tenant_id}/sessions": SessionsResponse;
   "POST /api/v2/tenants/{tenant_id}/sessions": SessionResponse;
+  "POST /api/v2/tenants/{tenant_id}/sessions/batch-delete": SessionBatchDeleteResponse;
   "DELETE /api/v2/tenants/{tenant_id}/sessions/{session_id}": SessionDeleteResponse;
   "GET /api/v2/tenants/{tenant_id}/sessions/{session_id}": SessionDetailResponse;
   "POST /api/v2/tenants/{tenant_id}/sessions/{session_id}/runs": RunResponse;

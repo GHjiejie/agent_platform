@@ -820,45 +820,69 @@ class Platform:
         # The same tenant lock as enqueue prevents new work from racing deletion.
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
             self.identity.assert_current(connection, user, "runs.execute")
-            session = (
-                connection.execute(
-                    select(t.sessions).where(
-                        t.sessions.c.id == session_id,
-                        t.sessions.c.tenant_id == user["tenant_id"],
-                        t.sessions.c.user_id == user["id"],
-                    )
-                )
-                .mappings()
-                .first()
+            return self._delete_session(connection, user, session_id)
+
+    def delete_sessions(self, user: dict, session_ids: list[str]) -> dict:
+        if not 1 <= len(session_ids) <= 200:
+            raise PlatformError(
+                400, "invalid_session_ids", "每次请选择 1 至 200 条会话。"
             )
-            if not session:
-                raise PlatformError(404, "not_found", "资源不存在或无权访问。")
-            if session["deleted_at"]:
-                return {"id": session_id, "deleted": True}
-            if connection.scalar(
-                select(t.runs.c.id)
-                .where(
-                    t.runs.c.tenant_id == user["tenant_id"],
-                    t.runs.c.session_id == session_id,
-                    t.runs.c.status.in_(ACTIVE_STATUSES),
-                )
-                .limit(1)
-            ):
-                raise PlatformError(
-                    409,
-                    "session_busy",
-                    "会话仍在运行，请先停止生成或等待运行结束后再删除。",
-                )
+        deleted_ids, failed = [], []
+        with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
+            self.identity.assert_current(connection, user, "runs.execute")
+            for session_id in dict.fromkeys(session_ids):
+                try:
+                    self._delete_session(connection, user, session_id)
+                    deleted_ids.append(session_id)
+                except PlatformError as error:
+                    if error.code not in {"not_found", "session_busy"}:
+                        raise
+                    failed.append(
+                        {"id": session_id, "code": error.code, "message": error.message}
+                    )
+        return {"deleted_ids": deleted_ids, "failed": failed}
+
+    def _delete_session(self, connection, user: dict, session_id: str) -> dict:
+        # Both entry points hold the enqueue lock and validate current authority.
+        session = (
             connection.execute(
-                update(t.sessions)
-                .where(
+                select(t.sessions).where(
                     t.sessions.c.id == session_id,
                     t.sessions.c.tenant_id == user["tenant_id"],
                     t.sessions.c.user_id == user["id"],
                 )
-                .values(deleted_at=now())
             )
-            audit(connection, user, "session.delete", session_id)
+            .mappings()
+            .first()
+        )
+        if not session:
+            raise PlatformError(404, "not_found", "资源不存在或无权访问。")
+        if session["deleted_at"]:
+            return {"id": session_id, "deleted": True}
+        if connection.scalar(
+            select(t.runs.c.id)
+            .where(
+                t.runs.c.tenant_id == user["tenant_id"],
+                t.runs.c.session_id == session_id,
+                t.runs.c.status.in_(ACTIVE_STATUSES),
+            )
+            .limit(1)
+        ):
+            raise PlatformError(
+                409,
+                "session_busy",
+                "会话仍在运行，请先停止生成或等待运行结束后再删除。",
+            )
+        connection.execute(
+            update(t.sessions)
+            .where(
+                t.sessions.c.id == session_id,
+                t.sessions.c.tenant_id == user["tenant_id"],
+                t.sessions.c.user_id == user["id"],
+            )
+            .values(deleted_at=now())
+        )
+        audit(connection, user, "session.delete", session_id)
         return {"id": session_id, "deleted": True}
 
     def session_detail(self, user: dict, session_id: str) -> dict:

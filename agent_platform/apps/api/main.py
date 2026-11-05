@@ -780,6 +780,12 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
     def create_session(body: s.SessionCreate, user=Depends(auth)):
         return platform.create_session(user, body.agent_id, body.title)
 
+    @app.post(
+        "/api/v1/sessions/batch-delete", response_model=r.SessionBatchDeleteResponse
+    )
+    def delete_sessions(body: s.SessionBatchDelete, user=Depends(auth)):
+        return platform.delete_sessions(user, body.session_ids)
+
     @app.get(
         "/api/v1/sessions/{session_id}",
         response_model=r.SessionDetailResponse,

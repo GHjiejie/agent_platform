@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select, update
@@ -195,6 +196,161 @@ class SessionDeletionTests(unittest.TestCase):
                         t.sessions.c.id == session["id"]
                     )
                 )
+            )
+
+    def test_batch_delete_reports_busy_and_private_items_without_blocking_other_deletions(
+        self,
+    ):
+        first = self.fixture.create_session()
+        second = self.fixture.create_session()
+        busy = self.fixture.create_session()
+        other = self.fixture.create_session(self.fixture.member)
+        run = self.fixture.create_run(self.fixture.owner, busy)
+        with self.db.transaction(f"tenant:{self.tenant}") as connection:
+            connection.execute(
+                update(t.runs).where(t.runs.c.id == run["id"]).values(status="running")
+            )
+        response = self.request(
+            "POST",
+            "/sessions/batch-delete",
+            json={
+                "session_ids": [
+                    first["id"],
+                    busy["id"],
+                    second["id"],
+                    other["id"],
+                    "unknown",
+                    first["id"],
+                ]
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result["deleted_ids"], [first["id"], second["id"]])
+        self.assertEqual(
+            [(item["id"], item["code"]) for item in result["failed"]],
+            [
+                (busy["id"], "session_busy"),
+                (other["id"], "not_found"),
+                ("unknown", "not_found"),
+            ],
+        )
+        self.assertEqual(result["failed"][1]["message"], result["failed"][2]["message"])
+        self.assertEqual(
+            self.request("GET", f"/sessions/{first['id']}").status_code, 404
+        )
+        self.assertEqual(
+            self.request("GET", f"/sessions/{busy['id']}").status_code, 200
+        )
+        self.assertEqual(
+            self.platform.session_detail(self.fixture.member, other["id"])["id"],
+            other["id"],
+        )
+        with self.db.read() as connection:
+            audits = list(
+                connection.scalars(
+                    select(t.audits.c.target).where(
+                        t.audits.c.action == "session.delete"
+                    )
+                )
+            )
+            self.assertEqual(set(audits), {first["id"], second["id"]})
+            self.assertEqual(len(audits), 2)
+        with self.db.transaction(f"tenant:{self.tenant}") as connection:
+            connection.execute(
+                update(t.runs)
+                .where(t.runs.c.id == run["id"])
+                .values(status="succeeded")
+            )
+        retry = self.request(
+            "POST", "/sessions/batch-delete", json={"session_ids": [busy["id"]]}
+        )
+        self.assertEqual(retry.json(), {"deleted_ids": [busy["id"]], "failed": []})
+
+    def test_batch_retries_are_idempotent_and_cross_tenant_items_remain_private(self):
+        sessions = [self.fixture.create_session() for _ in range(2)]
+        identifiers = [item["id"] for item in sessions]
+        denied = self.request(
+            "POST",
+            "/sessions/batch-delete",
+            tenant=self.fixture.tenant_b,
+            json={"session_ids": identifiers},
+        )
+        self.assertEqual(denied.status_code, 200, denied.text)
+        self.assertEqual(denied.json()["deleted_ids"], [])
+        self.assertTrue(
+            all(item["code"] == "not_found" for item in denied.json()["failed"])
+        )
+        for _ in range(2):
+            response = self.request(
+                "POST", "/sessions/batch-delete", json={"session_ids": identifiers}
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(
+                response.json(), {"deleted_ids": identifiers, "failed": []}
+            )
+        with self.db.read() as connection:
+            self.assertEqual(
+                connection.scalar(
+                    select(func.count())
+                    .select_from(t.audits)
+                    .where(t.audits.c.action == "session.delete")
+                ),
+                2,
+            )
+
+    def test_batch_bounds_csrf_and_role_are_checked_before_writing(self):
+        session = self.fixture.create_session()
+        for values in ([], ["unknown"] * 201, ["x" * 65], [""]):
+            with self.subTest(values_length=len(values)):
+                result = self.request(
+                    "POST", "/sessions/batch-delete", json={"session_ids": values}
+                )
+                self.assertEqual(result.status_code, 422, result.text)
+        no_csrf = self.client.post(
+            f"/api/v2/tenants/{self.tenant}/sessions/batch-delete",
+            json={"session_ids": [session["id"]]},
+        )
+        self.assertEqual(no_csrf.status_code, 403)
+        self.login(self.fixture.finance["email"])
+        denied = self.request(
+            "POST", "/sessions/batch-delete", json={"session_ids": [session["id"]]}
+        )
+        self.assertEqual(denied.status_code, 403, denied.text)
+        self.assertEqual(
+            self.platform.session_detail(self.fixture.owner, session["id"])["id"],
+            session["id"],
+        )
+
+    def test_unexpected_batch_failure_rolls_back_deletions_and_audits(self):
+        first, second = [self.fixture.create_session() for _ in range(2)]
+        remove = self.platform._delete_session
+
+        def fail_second(connection, actor, session_id):
+            if session_id == second["id"]:
+                raise RuntimeError("Explicit isolated storage failure")
+            return remove(connection, actor, session_id)
+
+        with (
+            patch.object(self.platform, "_delete_session", side_effect=fail_second),
+            self.assertRaises(RuntimeError),
+        ):
+            self.platform.delete_sessions(
+                self.fixture.owner, [first["id"], second["id"]]
+            )
+        for item in (first, second):
+            self.assertEqual(
+                self.platform.session_detail(self.fixture.owner, item["id"])["id"],
+                item["id"],
+            )
+        with self.db.read() as connection:
+            self.assertEqual(
+                connection.scalar(
+                    select(func.count())
+                    .select_from(t.audits)
+                    .where(t.audits.c.action == "session.delete")
+                ),
+                0,
             )
 
     def test_pagination_filters_deleted_rows_before_selecting_each_page(self):

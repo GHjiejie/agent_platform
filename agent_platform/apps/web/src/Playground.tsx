@@ -387,9 +387,12 @@ export function Playground({ name }: { name?: string }) {
     </div>
     {historyOpen && <SessionHistory sessions={sessions.data?.items} loading={sessions.loading} error={sessions.error} reload={sessions.reload}
       currentSessionId={sessionId} agents={agents.data?.items} tenant={tenantScope} busy={busy} choose={chooseSession}
-      deleted={(id) => {
-        sessions.setData((current) => current ? { ...current, items: current.items.filter((session) => session.id !== id) } : current);
-        if (id === sessionId) newSession();
+      deleted={(ids, options) => {
+        sessions.setData((current) => current ? { ...current, items: current.items.filter((session) => !ids.includes(session.id)) } : current);
+        if (sessionId && ids.includes(sessionId)) {
+          newSession();
+          if (options?.keepHistoryOpen) setHistoryOpen(true);
+        }
       }} close={() => setHistoryOpen(false)} />}
     {showEvents && <Modal title="运行详情" close={() => setShowEvents(false)}>
       <div className="pg-run-details">
