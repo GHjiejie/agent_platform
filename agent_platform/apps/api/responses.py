@@ -354,3 +354,41 @@ class RemoteAvailabilityResponse(ResponseModel):
 class RemoteProbeResponse(ResponseModel):
     id: str
     status: Literal["pending"]
+
+
+class ProviderModel(ResponseModel):
+    id: str
+    name: str
+    owned_by: str
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+
+
+class ProviderResponse(ResponseModel):
+    id: str
+    name: str
+    api_base: str
+    catalog: list[ProviderModel]
+    catalog_updated_at: str | None = None
+    created_at: str
+
+
+class ProviderListResponse(ResponseModel):
+    items: list[ProviderResponse]
+
+
+class ProviderOperationResult(ResponseModel):
+    deployment_id: str | None = None
+    internal_route: str | None = None
+    model_count: int | None = None
+
+
+class ProviderOperationResponse(ResponseModel):
+    id: str
+    provider_id: str
+    kind: str
+    status: str
+    attempts: int
+    error_code: str
+    result: ProviderOperationResult
+    updated_at: str

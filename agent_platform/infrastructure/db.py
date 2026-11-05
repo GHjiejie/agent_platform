@@ -68,6 +68,7 @@ class Database:
             "task_lease_tables",
             "remote_agent_tables",
             "remote_call_tables",
+            "provider_tables",
             "operations_tables",
             "support_tables",
             "metering_tables",
@@ -137,6 +138,7 @@ class Database:
                     "task_lease_tables",
                     "remote_agent_tables",
                     "remote_call_tables",
+                    "provider_tables",
                     "operations_tables",
                     "metering_tables",
                 ):

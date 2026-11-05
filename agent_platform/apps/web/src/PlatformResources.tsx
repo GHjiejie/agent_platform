@@ -1,3 +1,4 @@
+import { ProviderCatalog } from "./ProviderCatalog";
 import { Select } from "./Select";
 import { useEffect, useState } from "react";
 import { ArrowDown, ArrowUp, Pencil, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
@@ -214,10 +215,11 @@ export function TenantFinancePanel({ tenant, refresh }: { tenant: Tenant; refres
 }
 
 export function PlatformDeploymentsPanel() {
+  const [discovering, setDiscovering] = useState(false);
   const resource = useResource<Items<Deployment>>("/api/v2/platform/deployments");
   const [creating, setCreating] = useState(false);
-  return <Panel title="平台模型部署" detail="先登记已经在网关配置好的部署，再给组织授权与设置报价。" action={<Button variant="secondary" onClick={() => setCreating(true)}>
-    <Plus size={15} />登记部署</Button>}>
+  return <Panel title="平台模型部署" detail="从服务商获取模型并接入，也可登记已有网关部署，再向组织授权。" action={<div className="row-actions"><Button onClick={() => setDiscovering(true)}><RefreshCw size={15} />获取服务商模型</Button><Button variant="secondary" onClick={() => setCreating(true)}><Plus size={15} />登记部署</Button></div>}>
+    {discovering && <ProviderCatalog close={() => setDiscovering(false)} canPrice={false} changed={resource.reload} />}
     <ResourceState loading={resource.loading} error={resource.error} retry={() => void resource.reload()}>
       {resource.data?.items.length ? <div className="table-scroll">
         <table>

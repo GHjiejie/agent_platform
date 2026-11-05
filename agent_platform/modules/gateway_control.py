@@ -180,6 +180,35 @@ class LiteLLMControlAdapter:
                 "gateway_control_invalid_response", unknown=mutation
             ) from None
 
+    def provider_model_info(self, model_id):
+        result = self._request("/model/info?" + urlencode({"model_id": model_id}))
+        rows = result.get("data")
+        if not isinstance(rows, list) or len(rows) > 10000:
+            raise ControlFailure("provider_gateway_invalid_response")
+        matches = [
+            row
+            for row in rows
+            if isinstance(row, dict) and row.get("model_info", {}).get("id") == model_id
+        ]
+        if len(matches) > 1:
+            raise ControlFailure("provider_gateway_conflict")
+        return matches[0] if matches else None
+
+    def create_provider_model(self, model_id, route, upstream, api_base, api_key):
+        self._request(
+            "/model/new",
+            {
+                "model_name": route,
+                "litellm_params": {
+                    "model": upstream,
+                    "api_base": api_base,
+                    "api_key": api_key,
+                },
+                "model_info": {"id": model_id},
+            },
+            mutation=True,
+        )
+
     def user_info(self, user_id):
         result = self._request(
             "/user/info?" + urlencode({"user_id": user_id}), missing=True
@@ -2130,7 +2159,7 @@ class GatewayService:
             self._stats.update(last_error_code=code, last_error_at=_now())
             logger.warning("gateway_sync_operation state=%s code=%s", state, code)
 
-    async def serve(self, stop: asyncio.Event):
+    async def _serve_gateway(self, stop: asyncio.Event):
         # Strict-mode misconfiguration must fail startup instead of producing a
         # healthy idle heartbeat. Local legacy mode does not require control keys.
         if getattr(self.settings, "mode", "local") == "saas":
@@ -2171,3 +2200,27 @@ class GatewayService:
                     await asyncio.wait_for(stop.wait(), timeout=interval)
                 except TimeoutError:
                     pass
+
+    async def _serve_provider_catalog(self, stop):
+        from agent_platform.modules.provider_catalog import ProviderCatalog
+
+        catalog = ProviderCatalog(self)
+        while not stop.is_set():
+            try:
+                worked = await asyncio.to_thread(catalog.process_one)
+            except Exception:  # noqa: BLE001 - provider boundary cannot expose credential-bearing errors
+                self._stats["internal_errors"] += 1
+                worked = False
+            if not worked:
+                try:
+                    await asyncio.wait_for(
+                        stop.wait(),
+                        timeout=max(0.2, self.settings.gateway_sync_interval),
+                    )
+                except TimeoutError:
+                    pass
+
+    async def serve(self, stop: asyncio.Event):
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(self._serve_gateway(stop))
+            tasks.create_task(self._serve_provider_catalog(stop))

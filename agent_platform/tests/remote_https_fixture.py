@@ -123,6 +123,8 @@ def https_peer():
                             "healthy": True,
                         }
                     )
+                elif state.get("models") is not None and self.path.endswith("/models"):
+                    self.answer({"data": state["models"]})
                 elif state["submissions"] and self.path.endswith(
                     "/tasks/" + state["submissions"][-1]["request_id"]
                 ):

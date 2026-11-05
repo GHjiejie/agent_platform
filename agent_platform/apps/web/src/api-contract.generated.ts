@@ -66,6 +66,13 @@ export type PlatformRunInput = { "context"?: Array<Context> | null; "forwardedPr
 export type PlatformUserCreate = { "email": string; "name": string; "password": string; };
 export type PrincipalResponse = { "active": boolean; "auth_version": number; "capabilities": Array<string>; "created_at": string; "email": string; "global_status": string; "id": string; "memberships": Array<MembershipResponse>; "name": string; "platform_roles": Array<string>; };
 export type ProjectionRebuild = { "reason": string; };
+export type ProviderCreate = { "api_base": string; "api_key": string; "name": string; };
+export type ProviderListResponse = { "items": Array<ProviderResponse>; };
+export type ProviderModel = { "context_window"?: number | null; "id": string; "max_output_tokens"?: number | null; "name": string; "owned_by": string; };
+export type ProviderModelImport = { "model_id": string; "tools"?: boolean; };
+export type ProviderOperationResponse = { "attempts": number; "error_code": string; "id": string; "kind": string; "provider_id": string; "result": ProviderOperationResult; "status": string; "updated_at": string; };
+export type ProviderOperationResult = { "deployment_id"?: string | null; "internal_route"?: string | null; "model_count"?: number | null; };
+export type ProviderResponse = { "api_base": string; "catalog": Array<ProviderModel>; "catalog_updated_at"?: string | null; "created_at": string; "id": string; "name": string; };
 export type Quota = { "concurrent"?: number | null; "max_budget"?: string | null; "rpm"?: number | null; "scope": "tenant" | "user" | "model"; "subject_id": string; "tpm"?: number | null; };
 export type ReasoningMessage = { "content": string; "encryptedValue"?: string | null; "id": string; "metadata"?: Record<string, unknown> | null; "role"?: "reasoning"; "subagentRunId"?: string | null; };
 export type ReasoningResponse = { "content": string; "created_at": string; "id": string; "run_id": string; "status": "streaming" | "complete" | "interrupted"; };
@@ -140,6 +147,11 @@ export type ApiResponseByOperation = {
   "PUT /api/v2/platform/costs/budgets/{scope}/{subject_id}": CostBudgetResponse;
   "POST /api/v2/platform/costs/budgets/{scope}/{subject_id}/review": CostBudgetResponse;
   "POST /api/v2/platform/deployments/{deployment_id}/cost-prices": CostPriceResponse;
+  "GET /api/v2/platform/provider-operations/{operation_id}": ProviderOperationResponse;
+  "GET /api/v2/platform/providers": ProviderListResponse;
+  "POST /api/v2/platform/providers": ProviderResponse;
+  "POST /api/v2/platform/providers/{provider_id}/discover": ProviderOperationResponse;
+  "POST /api/v2/platform/providers/{provider_id}/imports": ProviderOperationResponse;
   "POST /api/v2/platform/tenants/{tenant_id}/billing/budget-projection/rebuild": BudgetRebuildResponse;
   "GET /api/v2/platform/tenants/{tenant_id}/billing/calls/{call_id}/receipts": UsageReceiptsResponse;
   "GET /api/v2/platform/tenants/{tenant_id}/billing/wallet": WalletResponse;

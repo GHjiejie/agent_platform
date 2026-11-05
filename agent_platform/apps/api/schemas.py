@@ -316,3 +316,14 @@ class ProjectionRebuild(StrictModel):
 
 class CostReview(ProjectionRebuild):
     expected_version: int = Field(ge=1)
+
+
+class ProviderCreate(StrictModel):
+    name: str = Field(min_length=1, max_length=120)
+    api_base: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(min_length=1, max_length=8192, pattern=r"^[!-~]+$")
+
+
+class ProviderModelImport(StrictModel):
+    model_id: str = Field(min_length=1, max_length=200)
+    tools: bool = False

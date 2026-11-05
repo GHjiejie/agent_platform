@@ -1,3 +1,4 @@
+import { ProviderCatalog } from "./ProviderCatalog";
 import { TeamSetup } from "./TeamSetup";
 import { TeamEditor, memberContracts } from "./TeamEditor";
 import type { TaskContract, TeamSpec } from "./api-contract.generated";
@@ -798,7 +799,8 @@ export function GatewayPage() {
   );
 }
 
-export function ModelsPage({ admin, canPolicy = false }: { admin: boolean; canPolicy?: boolean }) {
+export function ModelsPage({ admin, canPolicy = false, canDiscover = false, canPrice = false }: { admin: boolean; canPolicy?: boolean; canDiscover?: boolean; canPrice?: boolean }) {
+  const [discovering, setDiscovering] = useState(false);
   const resource = useResource<Items<Model> & { default_model?: string }>(
     "/models",
   );
@@ -821,15 +823,9 @@ export function ModelsPage({ admin, canPolicy = false }: { admin: boolean; canPo
         eyebrow="MODEL CATALOG"
         title="模型目录"
         description="查看当前组织获授权的模型与调用价格，选择合适的模型运行 Agent。"
-        action={
-          admin && (
-            <Button onClick={() => setEditing("new")}>
-              <Plus size={17} />
-              添加模型
-            </Button>
-          )
-        }
+        action={canDiscover ? <Button onClick={() => setDiscovering(true)}><Download size={17} />获取服务商模型</Button> : admin ? <Button onClick={() => setEditing("new")}><Plus size={17} />添加模型</Button> : undefined}
       />
+      {discovering && <ProviderCatalog close={() => setDiscovering(false)} canPrice={canPrice} changed={resource.reload} />}
       <div className="inline-note">
         <ShieldCheck size={17} />
         模型由平台运营人员授权。价格单位：USD / 百万 Token；每次运行保存所用价格。

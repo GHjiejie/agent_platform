@@ -135,6 +135,18 @@ class ComposeStoragePermissionsTests(unittest.TestCase):
         )
         for role, grants in calls.CALL_PRIVILEGES.items():
             expected[role][calls.calls.name] = grants
+        provider = import_module(
+            "agent_platform.migrations.versions.0020_provider_catalog"
+        )
+        for role, grants in provider.PROVIDER_PRIVILEGES.items():
+            expected[role].update(grants)
+        expected["gateway-sync"].update(
+            {
+                "model_deployments": ("INSERT", "SELECT"),
+                "platform_users": ("SELECT",),
+                "platform_roles": ("SELECT",),
+            }
+        )
         self.assertEqual(expected, ROLE_PRIVILEGES)
 
 

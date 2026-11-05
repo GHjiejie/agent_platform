@@ -976,6 +976,48 @@ class PostgreSQLIsolationTests(unittest.TestCase):
             )
         self.assertEqual(invalid.exception.orig.sqlstate, "23503")
 
+    def test_provider_discovery_and_import_use_control_role_with_write_only_api_secrets(
+        self,
+    ):
+        from agent_platform.infrastructure import provider_tables as providers
+        from agent_platform.modules.provider_catalog import ProviderCatalog
+        from agent_platform.tests.test_provider_catalog import (
+            CatalogControl,
+            ModelsClient,
+        )
+
+        api = ProviderCatalog(GatewayService(self.db, self.platform.settings))
+        provider = api.create(
+            self.fixture.owner["id"],
+            name="Acceptance provider",
+            api_base="https://provider.example.test/v1",
+            api_key="private-provider-pg-secret",
+        )
+        job = api.enqueue(self.fixture.owner["id"], provider["id"], "discover")
+        with self.assertRaises(DBAPIError) as denied, self.db.read() as conn:
+            conn.execute(select(providers.secrets))
+        self.assertEqual(denied.exception.orig.sqlstate, "42501")
+        control_db = self.sandbox.database(self.sandbox.runtime_urls["gateway-sync"])
+        client, adapter = ModelsClient(), CatalogControl()
+        control = ProviderCatalog(
+            GatewayService(control_db, self.platform.settings, adapter=adapter),
+            client=client,
+        )
+        self.assertTrue(control.process_one())
+        self.assertEqual(
+            api.operation(self.fixture.owner["id"], job["id"])["status"], "succeeded"
+        )
+        job = api.enqueue(
+            self.fixture.owner["id"], provider["id"], "import", "vendor/model-a"
+        )
+        self.assertTrue(control.process_one())
+        result = api.operation(self.fixture.owner["id"], job["id"])
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(len(adapter.writes), 1)
+        worker = self.sandbox.database(self.sandbox.runtime_urls["worker"])
+        with self.assertRaises(DBAPIError), worker.read() as conn:
+            conn.execute(select(providers.secrets))
+
     def test_remote_fixed_fees_use_worker_permissions_and_tenant_rls(self):
         from agent_platform.modules.costs import CostService
 

@@ -281,9 +281,22 @@ def main():
     print(render_grants(args.role, schema=args.schema, database=args.database))
 
 
-if __name__ == "__main__":
-    main()
-
 ROLE_PRIVILEGES["api"]["remote_agent_calls"] = ("SELECT", "UPDATE")
 ROLE_PRIVILEGES["worker"]["remote_agent_calls"] = ("INSERT", "SELECT", "UPDATE")
 ROLE_PRIVILEGES["maintenance"]["remote_agent_calls"] = ("SELECT",)
+
+# Provider secrets are write-only to API; model discovery/import runs in the control service.
+from agent_platform.infrastructure.provider_tables import PROVIDER_PRIVILEGES
+
+for _service, _tables in PROVIDER_PRIVILEGES.items():
+    ROLE_PRIVILEGES[_service].update(_tables)
+ROLE_PRIVILEGES["gateway-sync"].update(
+    {
+        "model_deployments": ("INSERT", "SELECT"),
+        "platform_users": ("SELECT",),
+        "platform_roles": ("SELECT",),
+    }
+)
+
+if __name__ == "__main__":
+    main()

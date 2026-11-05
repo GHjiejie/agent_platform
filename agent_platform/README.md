@@ -4,6 +4,8 @@ Python / FastAPI、React / TypeScript、LangGraph 与 LiteLLM 组成的多租户
 
 ## 文档
 
+- [服务商模型发现](docs/provider-model-discovery.md)：从服务商接口获取模型，页面选择后动态接入网关，无需逐个修改配置文件。
+
 - [AG-UI 交互协议](docs/ag-ui-protocol.md)：Playground 的流式运行、工具事件、取消、幂等与断线恢复。
 - [可视化界面助手](docs/generative-ui-agent.md)：内置 Agent、HTML/CSS/JS 工具、隔离交互界面、历史恢复与继续修改。
 - [Agent 执行策略](docs/agent-execution-policy.md)：开发者配置思考强度、调用和 Token/费用预算、运行时限及输出上限后的有限恢复。
