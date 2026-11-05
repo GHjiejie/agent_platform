@@ -21,7 +21,16 @@ const agents = [
   { id: "writer", name: "写作助手", description: "整理想法，完善文章。", builtin_key: null },
 ].map((agent) => ({ ...agent, model_id: null, system_prompt: "", temperature: 0.5, max_steps: 6, max_tokens: 2048, tools: [], published_version: 1, starter_prompts: ["帮我写一段产品介绍", "整理一份工作计划"], created_at: created }));
 
-async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boolean; longHistory?: boolean; empty?: boolean; dropStream?: boolean; burst?: boolean; delayFinalSnapshot?: boolean; reducedAgents?: boolean } = {}) {
+declare global {
+  interface Window {
+    agentTestStream?: {
+      emit: (event: Record<string, unknown>) => void;
+      finish: () => void;
+    };
+  }
+}
+
+async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boolean; longHistory?: boolean; empty?: boolean; dropStream?: boolean; burst?: boolean; delayFinalSnapshot?: boolean; reducedAgents?: boolean; controlledStream?: boolean } = {}) {
   const writes: { path: string; body: Record<string, unknown>; key?: string }[] = [];
   const errors: string[] = [];
   const resumes: string[] = [];
@@ -39,6 +48,30 @@ async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boole
   const run = () => ({ id: "run-ui", session_id: newSession.id, tenant_id: "team-a", user_id: "user", agent_name: "客服回复助手", created_at: created, finished_at: ["queued", "running"].includes(runStatus) ? null : created, model_id: "luna", model_alias: "gpt-6-luna", status: runStatus, error: "", cost: "0.001" });
   let newMessages: typeof messages = [];
   let hasRun = false;
+  if (options.controlledStream) await page.addInitScript(() => {
+    const fetch = window.fetch.bind(window);
+    window.fetch = async (input, init) => {
+      const response = await fetch(input, init);
+      const url = input instanceof Request ? input.url : String(input);
+      if (!url.endsWith("/ag-ui") || init?.method !== "POST" || !response.ok) return response;
+      const prefix = await response.arrayBuffer();
+      const request = JSON.parse(String(init.body)) as { threadId: string; runId: string };
+      const encoder = new TextEncoder();
+      let sequence = 3;
+      const body = new ReadableStream<Uint8Array>({ start(controller) {
+        controller.enqueue(new Uint8Array(prefix));
+        const emit = (event: Record<string, unknown>) => controller.enqueue(encoder.encode(`id: ${sequence++}.0\ndata: ${JSON.stringify(event)}\n\n`));
+        window.agentTestStream = {
+          emit,
+          finish: () => {
+            emit({ type: "RUN_FINISHED", threadId: request.threadId, runId: request.runId, outcome: { type: "success" } });
+            controller.close();
+          },
+        };
+      } });
+      return new Response(body, { status: response.status, headers: response.headers });
+    };
+  });
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -82,6 +115,7 @@ async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boole
       const latest = body.messages.at(-1)!;
       newMessages = [...(options.longHistory ? messages : []), { id: latest.id, role: "user", content: String(latest.content), created_at: created }];
       const prefix = startFrames();
+      if (options.controlledStream) return wire(prefix);
       if (options.holdRun) return wire([...prefix, { id: "3.0", event: { type: "CUSTOM", name: "platform.model", value: { model: "gpt-6-luna" } } }]);
       if (options.dropStream) return wire([...prefix,
         { id: "4.0", event: { type: "TEXT_MESSAGE_START", messageId: "assistant:run-ui:call-1", role: "assistant" } },
@@ -140,7 +174,18 @@ async function fixture(page: Page, options: { failRun?: boolean; holdRun?: boole
     if (resource === "/entitlements") return json({ rpm: null, tpm: null, concurrent: null, max_concurrent_runs: 10, max_queued_runs: 20, max_members: 10, max_agents: 20, max_sse_connections: 10, max_export_jobs: 3, max_budget: null });
     return json({ error: { message: `Unhandled UI fixture: ${resource}` } }, 501);
   });
-  return { writes, errors, resumes, release: () => resolveEvents?.() };
+  return {
+    writes, errors, resumes, release: () => resolveEvents?.(),
+    emit: async (event: Record<string, unknown>) => page.evaluate((event) => {
+      if (!window.agentTestStream) throw new Error("Controlled stream is not connected");
+      window.agentTestStream.emit(event);
+    }, event),
+    finish: async (content: string) => {
+      runStatus = "succeeded";
+      newMessages.push({ id: "assistant:run-ui", role: "assistant", content, created_at: created });
+      await page.evaluate(() => window.agentTestStream?.finish());
+    },
+  };
 }
 
 test("组织移到右上角，侧栏真实占位连续变化并记住折叠状态", async ({ page }, info) => {
@@ -252,6 +297,157 @@ test("切换新对话后迟到的流式快照不会恢复旧回复", async ({ pa
   await expect(page.locator(".pg-message-text")).toHaveCount(0);
   await expect(input).toBeEnabled();
   expect(mock.errors).toEqual([]);
+});
+
+test.describe("流式输出体验", () => {
+  test("思考连续增长、折叠和视口缩小时保持触底", async ({ page }, info) => {
+    const mock = await fixture(page, { controlledStream: true, longHistory: true });
+    await page.goto("/#playground?tenant=team-a");
+    const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+    await input.fill("验证长思考的滚动跟随");
+    await input.press("Enter");
+    await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
+    const viewport = page.locator(".pg-messages");
+    const gap = () => viewport.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
+    const samples: number[] = [];
+    await mock.emit({ type: "REASONING_MESSAGE_START", messageId: "reasoning:run-ui:call-1", role: "reasoning" });
+    let reasoning = "这是一段用于复现视频中长思考输出的内容，包含分析步骤和代码说明。\n".repeat(1200);
+    await mock.emit({ type: "REASONING_MESSAGE_CONTENT", messageId: "reasoning:run-ui:call-1", delta: reasoning });
+    await expect(page.locator(".pg-reasoning-content")).toHaveText(reasoning);
+    const frameSamples = page.evaluate(async () => {
+      const intervals: number[] = [];
+      let previous = performance.now();
+      const started = previous;
+      await new Promise<void>((resolve) => {
+        const sample = (now: number) => {
+          intervals.push(now - previous);
+          previous = now;
+          if (now - started < 1200) requestAnimationFrame(sample);
+          else resolve();
+        };
+        requestAnimationFrame(sample);
+      });
+      return intervals;
+    });
+    for (let index = 0; index < 8; index++) {
+      const delta = `第 ${index + 1} 批思考。\n${"分析条件与实现步骤。\n".repeat(40)}`;
+      reasoning += delta;
+      await mock.emit({ type: "REASONING_MESSAGE_CONTENT", messageId: "reasoning:run-ui:call-1", delta });
+      await expect(page.locator(".pg-reasoning-content")).toHaveText(reasoning);
+      await expect.poll(gap).toBeLessThan(4);
+      samples.push(await gap());
+    }
+    const toggle = page.getByRole("button", { name: "正在思考" });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect.poll(gap).toBeLessThan(4);
+    await page.setViewportSize({ width: 390, height: 640 });
+    await expect.poll(gap).toBeLessThan(4);
+    await expect(page.getByRole("button", { name: "回到最新消息" })).toHaveCount(0);
+    await mock.emit({ type: "REASONING_END", messageId: "reasoning:run-ui:call-1" });
+    await mock.emit({ type: "TEXT_MESSAGE_START", messageId: "assistant:run-ui:call-1", role: "assistant" });
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: "长思考结束，继续正常回复。" });
+    await mock.finish("长思考结束，继续正常回复。");
+    await expect(page.getByRole("article", { name: "Agent 的回复", exact: true }).filter({ hasText: "长思考结束，继续正常回复。" }).getByRole("button", { name: "复制回复" })).toBeVisible();
+    await expect.poll(gap).toBeLessThan(4);
+    await page.screenshot({ path: info.outputPath("streaming-mobile-follow.png") });
+    await writeFile(info.outputPath("bottom-gap-samples.json"), JSON.stringify(samples));
+    await writeFile(info.outputPath("streaming-frame-intervals.json"), JSON.stringify(await frameSamples));
+    expect(mock.errors).toEqual([]);
+  });
+
+  test("上翻阅读时不抢滚动，回到底部后继续跟随", async ({ page }, info) => {
+    const mock = await fixture(page, { controlledStream: true, longHistory: true });
+    await page.goto("/#playground?tenant=team-a");
+    const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+    await input.fill("验证阅读位置");
+    await input.press("Enter");
+    await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
+    const viewport = page.locator(".pg-messages");
+    const gap = () => viewport.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
+    await mock.emit({ type: "TEXT_MESSAGE_START", messageId: "assistant:run-ui:call-1", role: "assistant" });
+    const first = "第一段回复，保持连续输出。\n".repeat(50);
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: first });
+    await expect.poll(gap).toBeLessThan(4);
+    await viewport.hover();
+    await page.mouse.wheel(0, -480);
+    await expect(page.getByRole("button", { name: "回到最新消息" })).toBeVisible();
+    // Wait for the wheel gesture itself to settle before measuring reading position.
+    await page.waitForTimeout(150);
+    const readingTop = await viewport.evaluate((element) => element.scrollTop);
+    const next = "新增内容不能把正在阅读的用户拉走。\n".repeat(70);
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: next });
+    await expect(page.locator(".pg-message.assistant").last()).toContainText(next.trim());
+    expect(Math.abs(await viewport.evaluate((element) => element.scrollTop) - readingTop)).toBeLessThan(4);
+    await page.screenshot({ path: info.outputPath("streaming-reading-position.png") });
+    await page.getByRole("button", { name: "回到最新消息" }).click();
+    await expect.poll(gap).toBeLessThan(4);
+    const last = "恢复跟随后的最新内容。\n".repeat(30);
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: last });
+    await expect.poll(gap).toBeLessThan(4);
+    await viewport.focus();
+    await page.keyboard.press("PageUp");
+    await expect(page.getByRole("button", { name: "回到最新消息" })).toBeVisible();
+    await page.keyboard.press("End");
+    await expect.poll(gap).toBeLessThan(4);
+    await expect(page.getByRole("button", { name: "回到最新消息" })).toHaveCount(0);
+    await mock.finish(first + next + last);
+    await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
+    await expect.poll(gap).toBeLessThan(4);
+    expect(mock.errors).toEqual([]);
+  });
+
+  test("分批文本逐帧呈现，完整保留表情并即时响应减少动效", async ({ page }, info) => {
+    const mock = await fixture(page, { controlledStream: true });
+    await page.goto("/#playground?tenant=team-a");
+    const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+    await input.fill("验证流式呈现");
+    await input.press("Enter");
+    await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
+    await mock.emit({ type: "TEXT_MESSAGE_START", messageId: "assistant:run-ui:call-1", role: "assistant" });
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: "回复：" });
+    const reply = page.locator(".pg-message.assistant .pg-message-text").last();
+    await expect(reply).toHaveText("回复：");
+    await reply.evaluate((element) => {
+      element.setAttribute("data-updates", "[]");
+      new MutationObserver(() => {
+        const updates = JSON.parse(element.getAttribute("data-updates") ?? "[]") as string[];
+        updates.push(element.textContent ?? "");
+        element.setAttribute("data-updates", JSON.stringify(updates));
+      }).observe(element, { childList: true, characterData: true, subtree: true });
+    });
+    const delta = "连续文字👩🏽‍💻🌏é，".repeat(40);
+    const full = "回复：" + delta;
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta });
+    await expect(reply).toHaveText(full);
+    const updates = await reply.evaluate((element) => JSON.parse(element.getAttribute("data-updates") ?? "[]") as string[]);
+    const partial = updates.filter((value) => value.length > 3 && value.length < full.length);
+    expect(partial.length).toBeGreaterThan(1);
+    const boundaries = new Set([0, ...Array.from(new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(full), (part) => part.index + part.segment.length)]);
+    for (const value of updates) {
+      expect(full.startsWith(value)).toBe(true);
+      expect(boundaries.has(value.length)).toBe(true);
+    }
+    const interrupted = "偏好切换前正在展开的文本。".repeat(200);
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: interrupted });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(reply).toHaveText(full + interrupted);
+    const tail = "减少动效时立即显示完整新增内容。".repeat(30);
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: tail });
+    await expect(reply).toHaveText(full + interrupted + tail);
+    // End with animation enabled and a pending batch: terminal events must
+    // immediately expose all accepted text, even when paint frames are paused.
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    const final = "结束前的最后一批内容。".repeat(100);
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: final });
+    await page.evaluate(() => { window.requestAnimationFrame = () => 1; window.cancelAnimationFrame = () => {}; });
+    await mock.finish(full + interrupted + tail + final);
+    await expect(page.getByRole("button", { name: "复制回复" })).toBeVisible();
+    await expect(page.getByText(full + interrupted + tail + final, { exact: true })).toHaveCount(1);
+    await writeFile(info.outputPath("streaming-reveal-samples.json"), JSON.stringify(updates));
+    expect(mock.errors).toEqual([]);
+  });
 });
 
 test("新对话默认 normal，切换助手后新建仍重置为 normal", async ({ page }) => {

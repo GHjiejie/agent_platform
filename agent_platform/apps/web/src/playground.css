@@ -10,7 +10,8 @@
 .pg-new-chat { background: #f4f2fc; color: #7063bd; }
 .pg-body { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
 .pg-body.is-empty { justify-content: center; padding-bottom: clamp(30px, 10vh, 120px); }
-.pg-messages { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 16px 32px 30px; }
+.pg-messages { min-height: 0; overflow-y: auto; overflow-anchor: none; overscroll-behavior: contain; scrollbar-width: thin; padding: 16px 32px 30px; }
+.pg-scroll-content { display: flow-root; }
 .has-messages .pg-messages { flex: 1; }
 .is-empty .pg-messages { flex: 0 1 auto; }
 .pg-welcome { max-width: 760px; margin: 0 auto; padding: 12px 4px 30px; }

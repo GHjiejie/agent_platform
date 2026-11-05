@@ -11,6 +11,8 @@ import type { Agent, GeneratedArtifact, Model, ReasoningEffort, ReasoningTrace, 
 import type { AGUIEvent } from "./ag-ui";
 import { messageRunId } from "./ag-ui";
 import { useAgentRun } from "./useAgentRun";
+import { useChatScroll } from "./useChatScroll";
+import { StreamingText } from "./StreamingText";
 import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
 
@@ -46,11 +48,8 @@ export function Playground({ name }: { name?: string }) {
   const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState("");
   const [showEvents, setShowEvents] = useState(false);
-  const viewport = useRef<HTMLDivElement>(null);
-  const scrollFrame = useRef<number | null>(null);
+  const { viewport, content: messageContent, showLatest, followLatest } = useChatScroll(sessionId);
   const input = useRef<HTMLTextAreaElement>(null);
-  const following = useRef(true);
-  const [showLatest, setShowLatest] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyQuery, setHistoryQuery] = useState("");
   const sendKey = useRef<{
@@ -157,17 +156,6 @@ export function Playground({ name }: { name?: string }) {
     };
   }, [sessionId, loadSession, reset]);
   useLayoutEffect(() => {
-    if (following.current && scrollFrame.current === null) scrollFrame.current = requestAnimationFrame(() => {
-      scrollFrame.current = null;
-      const element = viewport.current;
-      if (element && following.current) element.scrollTop = element.scrollHeight;
-    });
-  }, [detail?.messages.length, detail?.reasoning?.length, liveText, liveReasoning, liveArtifacts, sessionId]);
-  useEffect(() => () => {
-    if (scrollFrame.current !== null) cancelAnimationFrame(scrollFrame.current);
-    scrollFrame.current = null;
-  }, []);
-  useLayoutEffect(() => {
     if (!input.current) return;
     input.current.style.height = "auto";
     input.current.style.height = `${Math.min(input.current.scrollHeight, 180)}px`;
@@ -177,8 +165,7 @@ export function Playground({ name }: { name?: string }) {
     const message = draft.trim();
     if (!scopeIsCurrent(scopeRevision) || !message || activeRun || busy || loading || !agentId) return;
     setBusy(true);
-    following.current = true;
-    setShowLatest(false);
+    followLatest();
     setError("");
     try {
       let id = sessionId;
@@ -244,8 +231,7 @@ export function Playground({ name }: { name?: string }) {
     }
   }
   function newSession() {
-    following.current = true;
-    setShowLatest(false);
+    followLatest();
     setHistoryOpen(false);
     setShowEvents(false);
     setSessionId(null);
@@ -266,8 +252,7 @@ export function Playground({ name }: { name?: string }) {
   function chooseSession(session: Session) {
     reset();
     selection.current++;
-    following.current = true;
-    setShowLatest(false);
+    followLatest();
     setHistoryOpen(false);
     setShowEvents(false);
     setSessionId(session.id);
@@ -310,12 +295,8 @@ export function Playground({ name }: { name?: string }) {
       </div>
     </div>
     <div className={`pg-body ${hasMessages ? "has-messages" : "is-empty"}`}>
-      <div ref={viewport} className="pg-messages" aria-live="polite" aria-busy={Boolean(activeRun) || loading}
-        onScroll={(event) => {
-          const element = event.currentTarget;
-          following.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
-          setShowLatest(!following.current);
-        }}>
+      <div ref={viewport} className="pg-messages" role="region" aria-label="对话消息" tabIndex={0} aria-live="polite" aria-busy={Boolean(activeRun) || loading}>
+        <div ref={messageContent} className="pg-scroll-content">
         {loading && !detail ? <div className="pg-loading" role="status"><LoaderCircle size={21} className="spin" />正在恢复对话…</div>
           : !hasMessages ? <div className="pg-welcome">
             <div className="pg-greeting">你好{name ? `，${name}` : ""}</div>
@@ -327,18 +308,19 @@ export function Playground({ name }: { name?: string }) {
             {(activeRun || liveText || liveReasoning.length > 0 || liveArtifacts.length > 0) && <article className="pg-message assistant" aria-label={activeRun ? "Agent 正在回复" : "Agent 的回复"}>
               <span className="pg-assistant-icon"><Sparkles size={22} strokeWidth={1.7} /></span>
               <div className="pg-message-content">
-                {liveReasoning.map((trace) => <Reasoning key={trace.id} trace={trace} />)}
-                {liveText ? <div className="pg-message-text">{liveText}{activeRun && <span className="typing-cursor" />}</div>
+                {liveReasoning.map((trace) => <Reasoning key={trace.id} trace={trace} streaming={Boolean(activeRun) && trace.status === "streaming"} />)}
+                {liveText ? <div className="pg-message-text"><StreamingText text={liveText} streaming={Boolean(activeRun)} />{activeRun && <span className="typing-cursor" />}</div>
                   : !liveReasoning.length && <div className="pg-thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span>{activeRun?.status === "queued" ? "等待执行" : "正在思考"}</div>}
                 {liveArtifacts.filter((artifact) => !detail?.artifacts?.some((saved) => saved.id === artifact.id)).map((artifact) =>
                   <Artifact key={artifact.id} content={artifact.content} runStatus={activeRun?.status ?? "succeeded"} />)}
               </div>
             </article>}
           </div>}
+        </div>
       </div>
       {showLatest && hasMessages && <button className="pg-jump-latest" aria-label="回到最新消息" onClick={() => {
-        following.current = true; setShowLatest(false);
-        if (viewport.current) viewport.current.scrollTop = viewport.current.scrollHeight;
+        followLatest();
+        viewport.current?.focus({ preventScroll: true });
       }}><ArrowDown size={17} />最新消息</button>}
       <div className="pg-compose-area">
         {effectiveError && <div className="pg-notice error" role="alert"><AlertCircle size={17} /><span>{effectiveError}</span>
