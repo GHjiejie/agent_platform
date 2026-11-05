@@ -138,6 +138,15 @@ sessions = Table(
     Column("user_id", String(64), nullable=False),
     Column("agent_id", String(64), nullable=False),
     Column("title", String(160), nullable=False),
+    Column("deleted_at", String(40)),
+    Index(
+        "ix_sessions_visible_history",
+        "tenant_id",
+        "user_id",
+        "deleted_at",
+        "created_at",
+        "id",
+    ),
     UniqueConstraint("tenant_id", "id"),
     ForeignKeyConstraint(
         ["tenant_id", "user_id"],

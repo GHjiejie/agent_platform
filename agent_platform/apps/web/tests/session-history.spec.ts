@@ -1,4 +1,4 @@
-import { expect, test, type Download } from "@playwright/test";
+import { expect, test, type Download, type Page } from "@playwright/test";
 import { readFile } from "node:fs/promises";
 import { fixture } from "./ui-fixture";
 import { sessionMarkdown } from "../src/session-export";
@@ -19,6 +19,26 @@ async function downloadText(download: Download) {
   const path = await download.path();
   if (!path) throw new Error("浏览器未生成下载文件");
   return readFile(path, "utf8");
+}
+
+async function deletionFixture(page: Page, options: { pending?: Promise<void>; failOnce?: boolean } = {}) {
+  const mock = await fixture(page);
+  let exists = true;
+  let deletes = 0;
+  await page.route("**/api/v2/tenants/team-a/sessions", (route) => route.fulfill({ json: { items: exists ? [saved] : [] } }));
+  await page.route("**/api/v2/tenants/team-a/sessions/history", async (route) => {
+    if (route.request().method() === "DELETE") {
+      deletes++;
+      await options.pending;
+      if (options.failOnce && deletes === 1) return route.fulfill({ status: 409, json: { error: {
+        code: "session_busy", message: "会话仍在运行，请先停止生成或等待运行结束后再删除。",
+      } } });
+      exists = false;
+      return route.fulfill({ json: { id: saved.id, deleted: true } });
+    }
+    return route.fulfill({ status: exists ? 200 : 404, json: exists ? saved : { error: { code: "not_found", message: "会话不存在。" } } });
+  });
+  return { ...mock, deleteCount: () => deletes };
 }
 
 test("历史对话直接导出已保存问答，保留当前草稿并可继续打开会话", async ({ page }, info) => {
@@ -125,14 +145,23 @@ test("窄屏长标题仍可导出和搜索，不触发打开会话或横向溢�
   await page.getByRole("button", { name: "历史对话", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "历史对话", exact: true });
   const exportButton = dialog.getByRole("button", { name: `导出对话：${title}`, exact: true });
+  const deleteButton = dialog.getByRole("button", { name: `删除对话：${title}`, exact: true });
   await expect(exportButton).toBeVisible();
   const bounds = await exportButton.boundingBox();
   if (!bounds) throw new Error("导出按钮不可见");
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(390);
+  const deleteBounds = await deleteButton.boundingBox();
+  if (!deleteBounds) throw new Error("删除按钮不可见");
+  expect(deleteBounds.x + deleteBounds.width).toBeLessThanOrEqual(390);
   await page.screenshot({ path: info.outputPath("session-export-mobile.png"), animations: "disabled" });
   const downloaded = page.waitForEvent("download");
   await exportButton.click();
   expect(await downloadText(await downloaded)).toContain(saved.messages[0].content);
+  await expect(dialog).toBeVisible();
+  await deleteButton.click();
+  await expect(page.getByRole("dialog", { name: "删除对话", exact: true })).toContainText(title);
+  await page.screenshot({ path: info.outputPath("session-delete-mobile.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "取消", exact: true }).click();
   await expect(dialog).toBeVisible();
   await page.getByRole("textbox", { name: "搜索历史对话", exact: true }).fill("没有相关内容");
   await expect(page.getByText("没有找到相关对话，试试其他关键词。", { exact: true })).toBeVisible();
@@ -160,4 +189,89 @@ test("空会话与运行中的会话导出有明确说明", () => {
   expect(result.content).toContain("会话仍在进行中，以下为导出时已保存的消息。");
   expect(result.content).toContain("- Agent：历史 Agent");
   expect(result.content).toContain(saved.messages[0].content);
+});
+
+test("取消删除保留历史会话、搜索条件和未发送草稿", async ({ page }, info) => {
+  const mock = await deletionFixture(page);
+  await page.goto("/#playground?tenant=team-a");
+  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息", exact: true });
+  await input.fill("保留这份草稿");
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await page.getByRole("textbox", { name: "搜索历史对话", exact: true }).fill("产品");
+  await page.getByRole("button", { name: "删除对话：产品介绍怎么写？", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "删除对话", exact: true });
+  await expect(confirmation).toContainText("产品介绍怎么写？");
+  await expect(confirmation).toContainText("已有运行和费用记录会保留");
+  await page.screenshot({ path: info.outputPath("session-delete-desktop.png"), animations: "disabled" });
+  await confirmation.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "搜索历史对话", exact: true })).toHaveValue("产品");
+  await expect(page.getByRole("button", { name: "打开对话：产品介绍怎么写？", exact: true })).toBeVisible();
+  expect(mock.deleteCount()).toBe(0);
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(input).toHaveValue("保留这份草稿");
+  expect(mock.errors).toEqual([]);
+});
+
+test("确认删除只提交一次，成功后移除历史记录并保留其他会话草稿", async ({ page }) => {
+  let release: () => void = () => {};
+  const pending = new Promise<void>((resolve) => { release = resolve; });
+  const mock = await deletionFixture(page, { pending });
+  await page.goto("/#playground?tenant=team-a");
+  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息", exact: true });
+  await input.fill("其他会话的草稿");
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await page.getByRole("button", { name: "删除对话：产品介绍怎么写？", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "删除对话", exact: true });
+  const confirm = confirmation.getByRole("button", { name: "确认删除", exact: true });
+  await confirm.click();
+  await expect(confirm).toBeDisabled();
+  await expect(confirm).toHaveAttribute("aria-busy", "true");
+  await expect(confirmation.getByRole("button", { name: "取消", exact: true })).toBeDisabled();
+  await confirm.evaluate((element: HTMLButtonElement) => element.click());
+  await confirmation.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(confirmation).toBeVisible();
+  expect(mock.deleteCount()).toBe(1);
+  release();
+  await expect(page.getByText("对话已删除", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开对话：产品介绍怎么写？", exact: true })).toHaveCount(0);
+  await expect(page.getByText("开始聊天后，对话会保存在这里。", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(input).toHaveValue("其他会话的草稿");
+  await page.reload();
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await expect(page.getByText("开始聊天后，对话会保存在这里。", { exact: true })).toBeVisible();
+  expect(mock.errors).toEqual([]);
+});
+
+test("删除当前会话后回到新对话并清理已显示的消息", async ({ page }) => {
+  const mock = await deletionFixture(page);
+  await page.goto("/#playground?session=history&tenant=team-a");
+  await expect(page.getByRole("article", { name: "你的消息", exact: true })).toContainText("导出测试：你好🌏");
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await page.getByRole("button", { name: "删除对话：产品介绍怎么写？", exact: true }).click();
+  await page.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "今天想聊些什么？", exact: true })).toBeVisible();
+  await expect(page.getByRole("article")).toHaveCount(0);
+  expect(new URLSearchParams(new URL(page.url()).hash.split("?")[1]).has("session")).toBe(false);
+  await expect(page.getByRole("textbox", { name: "发送给 Agent 的消息", exact: true })).toBeEnabled();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(mock.deleteCount()).toBe(1);
+  expect(mock.errors).toEqual([]);
+});
+
+test("运行中拒绝删除时保留确认弹窗，运行结束后可重试", async ({ page }) => {
+  const mock = await deletionFixture(page, { failOnce: true });
+  await page.goto("/#playground?tenant=team-a");
+  await page.getByRole("button", { name: "历史对话", exact: true }).click();
+  await page.getByRole("button", { name: "删除对话：产品介绍怎么写？", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "删除对话", exact: true });
+  await confirmation.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(confirmation.getByRole("alert")).toContainText("会话仍在运行");
+  await expect(confirmation.getByRole("button", { name: "确认删除", exact: true })).toBeEnabled();
+  await confirmation.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(page.getByText("对话已删除", { exact: true })).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "历史对话", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "打开对话：产品介绍怎么写？", exact: true })).toHaveCount(0);
+  expect(mock.deleteCount()).toBe(2);
+  expect(mock.errors).toEqual([]);
 });

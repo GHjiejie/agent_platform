@@ -122,6 +122,11 @@ class SessionsResponse(ResponseModel):
     next_cursor: str | None
 
 
+class SessionDeleteResponse(ResponseModel):
+    id: str
+    deleted: Literal[True]
+
+
 class MessageResponse(ResponseModel):
     id: str
     run_id: str

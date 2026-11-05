@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronRight, Download, LoaderCircle, MessageSquare } from "lucide-react";
+import { ChevronRight, Download, LoaderCircle, MessageSquare, Trash2 } from "lucide-react";
 import { api, dateTime, getScopeRevision, scopeIsCurrent } from "./api";
 import { Button, Modal, SearchBox, useToast } from "./components";
 import { downloadSessionMarkdown } from "./session-export";
-import type { SessionDetailResponse } from "./api-contract.generated";
+import type { SessionDeleteResponse, SessionDetailResponse } from "./api-contract.generated";
 import type { Agent, Session } from "./types";
 import "./session-history.css";
 
@@ -17,13 +17,17 @@ type Props = {
   tenant: string;
   busy: boolean;
   choose: (session: Session) => void;
+  deleted: (sessionId: string) => void;
   close: () => void;
 };
 
-export function SessionHistory({ sessions, loading, error, reload, currentSessionId, agents, tenant, busy, choose, close }: Props) {
+export function SessionHistory({ sessions, loading, error, reload, currentSessionId, agents, tenant, busy, choose, deleted, close }: Props) {
   const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState<string | null>(null);
   const [failure, setFailure] = useState<{ session: Session; message: string } | null>(null);
+  const [confirming, setConfirming] = useState<Session | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const request = useRef<AbortController | null>(null);
   const revision = useRef(getScopeRevision()).current;
   const toast = useToast();
@@ -53,7 +57,46 @@ export function SessionHistory({ sessions, loading, error, reload, currentSessio
     }
   }
 
-  return <Modal title="历史对话" description="可将每条对话已保存的问答内容导出为 Markdown 文件。" close={close}>
+  async function deleteSession(session: Session) {
+    if (request.current || !scopeIsCurrent(revision)) return;
+    const controller = new AbortController();
+    request.current = controller;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      const result = await api<SessionDeleteResponse>(`/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE", signal: controller.signal }, tenant);
+      if (controller.signal.aborted || !scopeIsCurrent(revision)) return;
+      setConfirming(null);
+      deleted(result.id);
+      toast("对话已删除");
+      void reload();
+    } catch (error) {
+      if (!controller.signal.aborted && scopeIsCurrent(revision)) {
+        setDeleteError(error instanceof Error ? error.message : "删除失败，请稍后重试。");
+      }
+    } finally {
+      if (request.current === controller) {
+        request.current = null;
+        if (!controller.signal.aborted) setDeleting(false);
+      }
+    }
+  }
+
+  if (confirming) return <Modal key="delete" title="删除对话" close={() => { if (!deleting) setConfirming(null); }}>
+    <div className="pg-history-delete-body">
+      <p>确定删除「<strong>{confirming.title || "新对话"}</strong>」吗？</p>
+      <p className="muted">删除后将从历史记录中移除，无法再打开或导出。已有运行和费用记录会保留。</p>
+      {deleteError && <div className="pg-notice error" role="alert"><span>{deleteError}</span></div>}
+    </div>
+    <div className="modal-footer">
+      <Button variant="secondary" disabled={deleting} onClick={() => setConfirming(null)}>取消</Button>
+      <Button variant="danger" busy={deleting} onClick={() => void deleteSession(confirming)}>
+        {!deleting && <Trash2 size={15} />}确认删除
+      </Button>
+    </div>
+  </Modal>;
+
+  return <Modal key="history" title="历史对话" description="可导出已保存的问答内容，或删除不再需要的历史对话。" close={close}>
     <div className="pg-history-body">
       <SearchBox className="pg-history-search" aria-label="搜索历史对话" placeholder="搜索对话" value={query} onChange={setQuery} />
       {error && <div className="pg-notice error" role="alert"><span>{error}</span><button onClick={() => void reload()}>重试</button></div>}
@@ -71,6 +114,10 @@ export function SessionHistory({ sessions, loading, error, reload, currentSessio
             <Button className="pg-history-export" variant="ghost" busy={exporting === session.id} disabled={exporting !== null}
               aria-label={`导出对话：${title}`} title="导出为 Markdown" onClick={() => void exportSession(session)}>
               {exporting !== session.id && <Download size={15} />}导出
+            </Button>
+            <Button className="pg-history-delete" variant="ghost" disabled={busy || exporting !== null}
+              aria-label={`删除对话：${title}`} title="删除对话" onClick={() => { setDeleteError(""); setConfirming(session); }}>
+              <Trash2 size={15} /><span>删除</span>
             </Button>
           </div>;
         })}</div> : <div className="pg-history-empty">{query ? "没有找到相关对话，试试其他关键词。" : "开始聊天后，对话会保存在这里。"}</div>}

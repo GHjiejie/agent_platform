@@ -220,6 +220,22 @@ class SupportAccessTests(unittest.TestCase):
         self.assertEqual(audit["tenant_id"], self.tenant_id)
         self.assertEqual(audit["details"]["grant_id"], self.grant_id)
 
+    def test_deleted_history_is_unavailable_to_support_but_usage_is_retained(self):
+        self.login("owner")
+        deleted = self.client.delete(
+            f"/api/v2/tenants/{self.tenant_id}/sessions/{self.session_id}",
+            headers=self.headers,
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.login("staff")
+        content = self.client.get(
+            f"/api/v2/support-grants/{self.grant_id}/sessions/{self.session_id}"
+        )
+        self.assertEqual(content.status_code, 404, content.text)
+        usage = self.client.get(f"/api/v2/support-grants/{self.grant_id}/usage")
+        self.assertEqual(usage.status_code, 200, usage.text)
+        self.assertEqual([row["id"] for row in usage.json()["items"]], ["run-a"])
+
     def test_owner_transfer_invalidates_old_approval(self):
         self.transfer_owner()
         self.login("staff")

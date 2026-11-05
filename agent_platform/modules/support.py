@@ -350,6 +350,7 @@ class SupportService:
                     select(t.sessions.c.id, t.sessions.c.created_at).where(
                         t.sessions.c.tenant_id == tenant_id,
                         t.sessions.c.id == session_id,
+                        t.sessions.c.deleted_at.is_(None),
                     )
                 )
                 .mappings()

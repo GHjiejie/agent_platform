@@ -386,7 +386,11 @@ export function Playground({ name }: { name?: string }) {
       </div>
     </div>
     {historyOpen && <SessionHistory sessions={sessions.data?.items} loading={sessions.loading} error={sessions.error} reload={sessions.reload}
-      currentSessionId={sessionId} agents={agents.data?.items} tenant={tenantScope} busy={busy} choose={chooseSession} close={() => setHistoryOpen(false)} />}
+      currentSessionId={sessionId} agents={agents.data?.items} tenant={tenantScope} busy={busy} choose={chooseSession}
+      deleted={(id) => {
+        sessions.setData((current) => current ? { ...current, items: current.items.filter((session) => session.id !== id) } : current);
+        if (id === sessionId) newSession();
+      }} close={() => setHistoryOpen(false)} />}
     {showEvents && <Modal title="运行详情" close={() => setShowEvents(false)}>
       <div className="pg-run-details">
         <p className="pg-run-status">{activeRun ? connection === "retrying" ? "正在恢复实时连接" : "运行进行中" : "本次运行已结束"}</p>

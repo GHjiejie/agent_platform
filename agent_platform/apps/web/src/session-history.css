@@ -1,7 +1,8 @@
 .pg-history-row { display: flex; align-items: center; gap: 6px; }
 .pg-history-list .pg-history-open { flex: 1; width: auto; min-width: 0; }
 .pg-history-open > svg { flex: none; }
-.pg-history-list .pg-history-export {
+.pg-history-list .pg-history-export,
+.pg-history-list .pg-history-delete {
   flex: none;
   width: auto;
   min-height: 36px;
@@ -12,8 +13,18 @@
   white-space: nowrap;
 }
 .pg-history-list .pg-history-export:hover:not(:disabled) { background: #f3f2f8; }
+.pg-history-list .pg-history-delete { color: #b6556b; }
+.pg-history-list .pg-history-delete:hover:not(:disabled) { background: #fcf3f6; }
+.pg-history-delete-body { padding: 20px 24px; overflow-wrap: anywhere; }
+.pg-history-delete-body p { margin: 0 0 12px; line-height: 1.8; }
+.pg-history-delete-body p:last-child { margin-bottom: 0; }
+.pg-history-delete-body .pg-notice { margin: 16px 0 0; }
 @media (max-width: 440px) {
   .pg-history-row { gap: 2px; }
   .pg-history-list .pg-history-open { gap: 9px; padding-inline: 8px; }
-  .pg-history-list .pg-history-export { padding-inline: 8px; }
+  .pg-history-list .pg-history-export,
+  .pg-history-list .pg-history-delete { padding-inline: 8px; }
+  .pg-history-list .pg-history-delete { min-width: 36px; justify-content: center; }
+  .pg-history-delete > span { display: none; }
+  .pg-history-delete-body { padding-inline: 20px; }
 }

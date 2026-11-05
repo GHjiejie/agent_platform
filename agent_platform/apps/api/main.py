@@ -788,6 +788,12 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
     def session_detail(session_id: str, user=Depends(auth)):
         return platform.session_detail(user, session_id)
 
+    @app.delete(
+        "/api/v1/sessions/{session_id}", response_model=r.SessionDeleteResponse
+    )
+    def delete_session(session_id: str, user=Depends(auth)):
+        return platform.delete_session(user, session_id)
+
     @app.post(
         "/api/v1/sessions/{session_id}/runs",
         status_code=202,

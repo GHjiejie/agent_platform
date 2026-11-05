@@ -84,6 +84,16 @@ class AgentMigrationTest(unittest.TestCase):
                         conn.scalar(text("SELECT agent_id FROM platform_sessions")),
                         "agent",
                     )
+                    self.assertIsNone(
+                        conn.scalar(text("SELECT deleted_at FROM platform_sessions"))
+                    )
+                    self.assertIn(
+                        "ix_sessions_visible_history",
+                        {
+                            index["name"]
+                            for index in inspect(conn).get_indexes("platform_sessions")
+                        },
+                    )
                     model_column = next(
                         c
                         for c in inspect(conn).get_columns("platform_agents")

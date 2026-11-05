@@ -477,6 +477,8 @@ class Platform:
         cursor: str | None = None,
     ) -> list[dict]:
         query = select(table).where(table.c.tenant_id == user["tenant_id"])
+        if table is t.sessions:
+            query = query.where(table.c.deleted_at.is_(None))
         if own:
             require_capability(user, "runs.read_own")
             query = query.where(table.c.user_id == user["id"])
@@ -502,6 +504,8 @@ class Platform:
         query = select(table).where(
             table.c.id == resource_id, table.c.tenant_id == user["tenant_id"]
         )
+        if table is t.sessions:
+            query = query.where(table.c.deleted_at.is_(None))
         if own:
             require_capability(user, "runs.read_own")
             query = query.where(table.c.user_id == user["id"])
@@ -811,6 +815,51 @@ class Platform:
             }
             connection.execute(insert(t.sessions).values(**result))
         return result
+
+    def delete_session(self, user: dict, session_id: str) -> dict:
+        # The same tenant lock as enqueue prevents new work from racing deletion.
+        with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
+            self.identity.assert_current(connection, user, "runs.execute")
+            session = (
+                connection.execute(
+                    select(t.sessions).where(
+                        t.sessions.c.id == session_id,
+                        t.sessions.c.tenant_id == user["tenant_id"],
+                        t.sessions.c.user_id == user["id"],
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if not session:
+                raise PlatformError(404, "not_found", "资源不存在或无权访问。")
+            if session["deleted_at"]:
+                return {"id": session_id, "deleted": True}
+            if connection.scalar(
+                select(t.runs.c.id)
+                .where(
+                    t.runs.c.tenant_id == user["tenant_id"],
+                    t.runs.c.session_id == session_id,
+                    t.runs.c.status.in_(ACTIVE_STATUSES),
+                )
+                .limit(1)
+            ):
+                raise PlatformError(
+                    409,
+                    "session_busy",
+                    "会话仍在运行，请先停止生成或等待运行结束后再删除。",
+                )
+            connection.execute(
+                update(t.sessions)
+                .where(
+                    t.sessions.c.id == session_id,
+                    t.sessions.c.tenant_id == user["tenant_id"],
+                    t.sessions.c.user_id == user["id"],
+                )
+                .values(deleted_at=now())
+            )
+            audit(connection, user, "session.delete", session_id)
+        return {"id": session_id, "deleted": True}
 
     def session_detail(self, user: dict, session_id: str) -> dict:
         from agent_platform.modules.reasoning import session_reasoning
