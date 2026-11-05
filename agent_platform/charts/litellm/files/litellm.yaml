@@ -22,6 +22,7 @@ router_settings:
 {{- end }}
 
 litellm_settings:
+  callbacks: [platform_native_streaming.proxy_handler_instance]
   force_ipv4: true
   num_retries: 0
   request_timeout: 90

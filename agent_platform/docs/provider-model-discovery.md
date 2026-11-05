@@ -34,6 +34,12 @@
 
 接入操作在发送网关写请求前保存发送标记，并使用稳定部署标识。网关写结果不确定时，只读取对应部署核查，最多处理三次，不盲目重发创建请求；缺少确认信息的模型不会登记为可授权部署。超过次数的未知状态保留给平台核查，不会显示为接入成功。过期后台持有者不能更新新持有者的任务。
 
+## 原生流式能力与升级
+
+接入的文本对话模型需要兼容 Responses 流式接口。创建路由时，`model_info` 明确登记 `mode: responses`、`litellm_provider: openai` 和 `supports_native_streaming: true`。当前锁定的 LiteLLM 1.83.0 对热加入模型按上游名称查找能力时存在缺口；Compose 与 Helm 均加载 `platform_native_streaming.proxy_handler_instance`，在请求分发前补齐显式声明的能力，支持新模型即时流式调用。原因、验证及后续移除兼容层的条件见[流式输出优化](streaming-performance.md#2026-11-05-动态接入模型整段出现的问题)。
+
+升级前已经接入的 `provider-*` 路由需要补齐上述 `model_info` 字段。网关管理员应先通过 `GET /model/info` 核对平台部署 ID 和上游模型，再使用 `PATCH /model/{model_id}/update` 只更新这些能力字段，保留服务商连接与密钥。`POST /model/update` 是旧接口，不能用于此元数据修复。本机现有的 3 个服务商路由已完成修复。接口语义参考 [LiteLLM 模型管理](https://docs.litellm.ai/docs/proxy/model_management)。
+
 ## 本次验证
 
 - 完整后端门禁：565 项通过，0 失败、0 错误、0 跳过，含 PostgreSQL 17 的实际非 owner 服务角色、冻结迁移权限、Redis 和 Helm。[机器报告](validation/provider-catalog-acceptance-20261105.json)

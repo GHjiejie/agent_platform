@@ -204,7 +204,12 @@ class LiteLLMControlAdapter:
                     "api_base": api_base,
                     "api_key": api_key,
                 },
-                "model_info": {"id": model_id},
+                "model_info": {
+                    "id": model_id,
+                    "mode": "responses",
+                    "litellm_provider": "openai",
+                    "supports_native_streaming": True,
+                },
             },
             mutation=True,
         )

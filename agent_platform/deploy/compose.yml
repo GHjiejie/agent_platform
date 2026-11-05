@@ -99,6 +99,7 @@ services:
       LITELLM_LOG: ERROR
     volumes:
       - ./litellm.yaml:/app/platform-config.yaml:ro
+      - ../charts/litellm/files/platform_native_streaming.py:/app/platform_native_streaming.py:ro
       - ./bootstrap_gateway_key.py:/app/platform-bootstrap-key.py:ro
       - ${GATEWAY_BOOTSTRAP_DIR:-../.data/gateway-bootstrap}:/bootstrap
     depends_on:

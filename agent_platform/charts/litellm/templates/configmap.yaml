@@ -7,3 +7,5 @@ metadata:
 data:
   litellm.yaml: |
     {{- tpl (.Files.Get "files/litellm.yaml") . | nindent 4 }}
+  platform_native_streaming.py: |
+    {{- .Files.Get "files/platform_native_streaming.py" | nindent 4 }}

@@ -117,6 +117,30 @@ class InfrastructureChartTests(unittest.TestCase):
         self.assertNotEqual(original_annotation, updated_annotation)
         self.assertFalse(any(item["kind"] == "StatefulSet" for item in updated))
 
+    def test_gateway_native_streaming_hook_is_packaged_and_loaded(self):
+        rendered = self.render("litellm")
+        config = self.resource(rendered, "ConfigMap", "litellm-config")["data"]
+        self.assertEqual(
+            config["platform_native_streaming.py"],
+            (CHARTS / "litellm/files/platform_native_streaming.py").read_text(),
+        )
+        self.assertEqual(
+            yaml.safe_load(config["litellm.yaml"])["litellm_settings"]["callbacks"],
+            ["platform_native_streaming.proxy_handler_instance"],
+        )
+        pod = self.resource(rendered, "Deployment", "litellm")["spec"]["template"][
+            "spec"
+        ]
+        self.assertIn(
+            {
+                "name": "config",
+                "mountPath": "/app/platform_native_streaming.py",
+                "subPath": "platform_native_streaming.py",
+                "readOnly": True,
+            },
+            pod["containers"][0]["volumeMounts"],
+        )
+
     def test_redis_auth_uses_secret_refs_and_error_sensitive_probes(self):
         rendered = self.render(
             "redis", overrides=("auth.existingSecret=redis-credentials",)

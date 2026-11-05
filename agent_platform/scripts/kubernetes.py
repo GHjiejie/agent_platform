@@ -290,7 +290,11 @@ class Cluster:
                     "kind": "ConfigMap",
                     "metadata": {"name": "litellm-config", "namespace": self.namespace},
                     "data": {
-                        "litellm.yaml": (PLATFORM / "deploy/litellm.yaml").read_text()
+                        "litellm.yaml": (PLATFORM / "deploy/litellm.yaml").read_text(),
+                        "platform_native_streaming.py": (
+                            PLATFORM
+                            / "charts/litellm/files/platform_native_streaming.py"
+                        ).read_text(),
                     },
                 }
             ]

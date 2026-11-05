@@ -67,6 +67,19 @@ class ComposeStoragePermissionsTests(unittest.TestCase):
         self.assertIn("../.data/gateway-bootstrap", mount)
         self.assertNotIn("${GATEWAY_BOOTSTRAP_DIR:-../.data}:", mount)
 
+    def test_litellm_native_streaming_hook_is_loaded_from_readonly_module(self):
+        self.assertIn(
+            "../charts/litellm/files/platform_native_streaming.py:/app/platform_native_streaming.py:ro",
+            self.services["litellm"]["volumes"],
+        )
+        config = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "deploy/litellm.yaml").read_text()
+        )
+        self.assertEqual(
+            config["litellm_settings"]["callbacks"],
+            ["platform_native_streaming.proxy_handler_instance"],
+        )
+
     def test_background_execution_and_init_have_no_artifact_mounts(self):
         for role in ("worker", "gateway-sync", "init"):
             with self.subTest(role=role):
