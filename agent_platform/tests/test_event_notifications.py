@@ -19,8 +19,13 @@ from agent_platform.apps.api.main import COOKIE, create_app
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.config import Settings
+from agent_platform.infrastructure.db import Database
 from agent_platform.infrastructure.errors import PlatformError
-from agent_platform.infrastructure.events import EventNotifier, configure_notifications
+from agent_platform.infrastructure.events import (
+    EventNotifier,
+    EventWatch,
+    configure_notifications,
+)
 from agent_platform.modules.billing.service import BillingService
 from agent_platform.modules.costs import CostService
 from agent_platform.modules.operational_metrics import operational_snapshot
@@ -223,6 +228,57 @@ class EventNotificationTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(task, 3)
         self.assertIn("event: run.completed", "".join(bodies))
         self.assertEqual(self.notifier.stats()["watchers"], 0)
+
+    async def test_separate_local_writer_streams_promptly_without_redis(self):
+        self.active()
+        response = await self.response()
+        writer = Database(self.settings.database_url)
+        self.addCleanup(writer.close)
+        waiting = asyncio.Event()
+        bodies = []
+        original_wait = EventWatch.wait
+
+        async def wait(watch, observed, timeout=2.0):
+            waiting.set()
+            return await original_wait(watch, observed, timeout)
+
+        async def send(message):
+            if message.get("body"):
+                bodies.append(message["body"].decode())
+
+        with patch.object(EventWatch, "wait", new=wait):
+            task = asyncio.create_task(response.stream_response(send))
+            try:
+                await asyncio.wait_for(waiting.wait(), 1)
+                # An independent DB handle has no in-memory notifier shared
+                # with the API, matching separate API/Worker processes.
+                for text in ("分进程片段一", "分进程片段二"):
+                    started = time.monotonic()
+                    with writer.transaction("tenant:" + self.tenant) as connection:
+                        append_event(
+                            connection, self.run["id"], "message.delta", {"text": text}
+                        )
+                    await eventually(
+                        lambda text=text: text in "".join(bodies), timeout=0.5
+                    )
+                    self.assertLess(time.monotonic() - started, 0.5)
+                with writer.transaction("tenant:" + self.tenant) as connection:
+                    connection.execute(
+                        update(t.runs)
+                        .where(t.runs.c.id == self.run["id"])
+                        .values(status="succeeded")
+                    )
+                    append_event(
+                        connection,
+                        self.run["id"],
+                        "run.completed",
+                        {"status": "succeeded"},
+                    )
+                await asyncio.wait_for(task, 1)
+                self.assertIn("event: run.completed", "".join(bodies))
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
 
     async def test_sse_last_event_id_and_after_replay_all_persisted_pages(self):
         with self.db.transaction("tenant:" + self.tenant) as connection:

@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import { Brain, ChevronDown } from "lucide-react";
 import type { AgentMessage } from "./ag-ui";
 import type { ReasoningTrace } from "./types";
-import { StreamingText } from "./StreamingText";
+import { MessageMarkdown } from "./MessageMarkdown";
 
 export function reasoningTrace(message: AgentMessage): ReasoningTrace | null {
   if (message.role !== "reasoning") return null;
@@ -25,7 +25,7 @@ export function Reasoning({ trace, streaming = trace.status === "streaming" }: {
       <Brain size={16} /><span>{title}</span><ChevronDown size={15} className={expanded ? "expanded" : ""} />
     </button>
     <div id={id} className="pg-reasoning-content" hidden={!expanded}>
-      {trace.content ? <StreamingText text={trace.content} streaming={streaming && expanded} /> : trace.status === "streaming" ? "正在分析问题…" : "未返回可展示的推理内容。"}
+      {trace.content ? <MessageMarkdown text={trace.content} streaming={streaming && expanded} /> : trace.status === "streaming" ? "正在分析问题…" : "未返回可展示的推理内容。"}
     </div>
   </section>;
 }

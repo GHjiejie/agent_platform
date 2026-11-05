@@ -300,6 +300,64 @@ test("切换新对话后迟到的流式快照不会恢复旧回复", async ({ pa
 });
 
 test.describe("流式输出体验", () => {
+  test("Markdown 在流式阶段和恢复历史后保持相同结构", async ({ page }, info) => {
+    const mock = await fixture(page, { controlledStream: true });
+    await page.goto("/#playground?tenant=team-a");
+    const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+    await input.fill("# 这是用户原始输入 **保留标记**");
+    await input.press("Enter");
+    await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
+    await mock.emit({ type: "TEXT_MESSAGE_START", messageId: "assistant:run-ui:call-1", role: "assistant" });
+    const first = "## Markdown 流式回复\n\n这是 **加粗";
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: first });
+    await expect(page.getByRole("heading", { level: 2, name: "Markdown 流式回复" })).toBeVisible();
+    await expect(page.locator(".pg-markdown strong")).toHaveText("加粗");
+    const next = '内容**和 `行内代码`。\n\n- 列表项一\n- 列表项二\n\n| 字段 | 状态 |\n| --- | --- |\n| 通知 | 连续 |\n\n```python\nprint("你好")';
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: next });
+    await expect(page.locator(".pg-markdown strong")).toHaveText("加粗内容");
+    await expect(page.locator(".pg-markdown ul li")).toHaveCount(2);
+    await expect(page.getByRole("columnheader")).toHaveCount(2);
+    await expect(page.locator(".pg-markdown pre code")).toContainText('print("你好")');
+    await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
+    await page.screenshot({ path: info.outputPath("markdown-streaming.png") });
+    const last = "\n```\n\n[项目链接](https://example.com)";
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: last });
+    await mock.finish(first + next + last);
+    await expect(page.getByRole("button", { name: "复制回复" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "项目链接" })).toHaveAttribute("href", "https://example.com");
+    await expect(page.getByRole("article", { name: "你的消息" })).toContainText("# 这是用户原始输入 **保留标记**");
+    await page.reload();
+    await expect(page.getByRole("heading", { level: 2, name: "Markdown 流式回复" })).toBeVisible();
+    await expect(page.locator(".pg-markdown strong")).toHaveText("加粗内容");
+    await expect(page.locator(".pg-markdown pre code")).toContainText('print("你好")');
+    await page.setViewportSize({ width: 390, height: 700 });
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath("markdown-history-mobile.png") });
+    expect(mock.errors).toEqual([]);
+  });
+
+  test("Markdown 不执行原始 HTML 或危险链接，也不自动加载外部图片", async ({ page }) => {
+    const mock = await fixture(page, { controlledStream: true });
+    const imageRequests: string[] = [];
+    page.on("request", (request) => { if (request.url().startsWith("https://tracking.example/")) imageRequests.push(request.url()); });
+    await page.goto("/#playground?tenant=team-a");
+    const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+    await input.fill("检查 Markdown 安全边界");
+    await input.press("Enter");
+    await expect(page.getByRole("button", { name: "停止生成" })).toBeVisible();
+    await mock.emit({ type: "TEXT_MESSAGE_START", messageId: "assistant:run-ui:call-1", role: "assistant" });
+    const text = '## 安全渲染\n\n<script>window.markdownExecuted = true</script>\n\n<img src="x" onerror="window.markdownExecuted = true">\n\n[危险链接](javascript:alert(1))\n\n![图片说明](https://tracking.example/image)\n\n```html\n<script>只展示代码</script>\n```';
+    await mock.emit({ type: "TEXT_MESSAGE_CONTENT", messageId: "assistant:run-ui:call-1", delta: text });
+    await mock.finish(text);
+    await expect(page.getByRole("button", { name: "复制回复" })).toBeVisible();
+    await expect(page.locator(".pg-markdown script, .pg-markdown img, .pg-markdown [onerror], .pg-markdown a[href^='javascript:']")).toHaveCount(0);
+    await expect(page.locator(".pg-markdown pre code")).toHaveText("<script>只展示代码</script>\n");
+    await expect(page.getByRole("link", { name: "图片说明" })).toHaveAttribute("href", "https://tracking.example/image");
+    expect(await page.evaluate(() => "markdownExecuted" in window)).toBe(false);
+    expect(imageRequests).toEqual([]);
+    expect(mock.errors).toEqual([]);
+  });
+
   test("思考连续增长、折叠和视口缩小时保持触底", async ({ page }, info) => {
     const mock = await fixture(page, { controlledStream: true, longHistory: true });
     await page.goto("/#playground?tenant=team-a");

@@ -12,7 +12,7 @@ import type { AGUIEvent } from "./ag-ui";
 import { messageRunId } from "./ag-ui";
 import { useAgentRun } from "./useAgentRun";
 import { useChatScroll } from "./useChatScroll";
-import { StreamingText } from "./StreamingText";
+import { MessageMarkdown } from "./MessageMarkdown";
 import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
 
@@ -309,7 +309,7 @@ export function Playground({ name }: { name?: string }) {
               <span className="pg-assistant-icon"><Sparkles size={22} strokeWidth={1.7} /></span>
               <div className="pg-message-content">
                 {liveReasoning.map((trace) => <Reasoning key={trace.id} trace={trace} streaming={Boolean(activeRun) && trace.status === "streaming"} />)}
-                {liveText ? <div className="pg-message-text"><StreamingText text={liveText} streaming={Boolean(activeRun)} />{activeRun && <span className="typing-cursor" />}</div>
+                {liveText ? <div className="pg-message-text"><MessageMarkdown text={liveText} streaming={Boolean(activeRun)} /></div>
                   : !liveReasoning.length && <div className="pg-thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span>{activeRun?.status === "queued" ? "等待执行" : "正在思考"}</div>}
                 {liveArtifacts.filter((artifact) => !detail?.artifacts?.some((saved) => saved.id === artifact.id)).map((artifact) =>
                   <Artifact key={artifact.id} content={artifact.content} runStatus={activeRun?.status ?? "succeeded"} />)}
@@ -409,7 +409,7 @@ const ConversationHistory = memo(function ConversationHistory({ messages, artifa
     {message.role === "assistant" && <span className="pg-assistant-icon"><Sparkles size={22} strokeWidth={1.7} /></span>}
     <div className="pg-message-content">
       {message.role === "assistant" && traces(message).map((trace) => <Reasoning key={trace.id} trace={trace} />)}
-      <div className="pg-message-text">{message.content}</div>
+      <div className="pg-message-text">{message.role === "assistant" ? <MessageMarkdown text={message.content} /> : message.content}</div>
       {artifacts?.filter((artifact) => artifact.run_id === runId(message) &&
         (message.role === "assistant" || !messages.some((item) => item.role === "assistant" && runId(item) === artifact.run_id)))
         .map((artifact) => <Artifact key={artifact.id} content={artifact.content}

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 const revealWindow = 100;
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-export function StreamingText({ text, streaming }: { text: string; streaming: boolean }) {
+export function useStreamingText(text: string, streaming: boolean) {
   const [displayed, setDisplayed] = useState(text);
   const visible = useRef(text);
   const target = useRef(text);
@@ -70,5 +70,9 @@ export function StreamingText({ text, streaming }: { text: string; streaming: bo
   }, [text, streaming, flush, publish]);
 
   // Completion/cancellation and historical snapshots never wait for animation.
-  return <>{streaming ? displayed : text}</>;
+  return streaming ? displayed : text;
+}
+
+export function StreamingText({ text, streaming }: { text: string; streaming: boolean }) {
+  return <>{useStreamingText(text, streaming)}</>;
 }
