@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { Brain, ChevronDown } from "lucide-react";
 import type { AgentMessage } from "./ag-ui";
 import type { ReasoningTrace } from "./types";
+import { MessageMarkdown } from "./MessageMarkdown";
 import "./reasoning.css";
 
 export function reasoningTrace(message: AgentMessage): ReasoningTrace | null {
@@ -16,7 +17,7 @@ export function reasoningTrace(message: AgentMessage): ReasoningTrace | null {
   };
 }
 
-export function Reasoning({ trace }: { trace: ReasoningTrace }) {
+export function Reasoning({ trace, streaming = trace.status === "streaming" }: { trace: ReasoningTrace; streaming?: boolean }) {
   const id = useId();
   const [expanded, setExpanded] = useState(trace.status === "streaming");
   const title = trace.status === "streaming" ? "正在思考" : trace.status === "interrupted" ? "思考已中断" : "思考过程";
@@ -27,7 +28,7 @@ export function Reasoning({ trace }: { trace: ReasoningTrace }) {
     <div id={id} className={`pg-reasoning-collapse${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} inert={!expanded}>
       <div className="pg-reasoning-clip">
         <div className="pg-reasoning-content">
-          {trace.content || (trace.status === "streaming" ? "正在分析问题…" : "未返回可展示的推理内容。")}
+          {trace.content ? <MessageMarkdown text={trace.content} streaming={streaming && expanded} /> : trace.status === "streaming" ? "正在分析问题…" : "未返回可展示的推理内容。"}
         </div>
       </div>
     </div>

@@ -948,6 +948,12 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
         from agent_platform.infrastructure.events import configure_notifications
 
         notifier = configure_notifications(db, settings.redis_url)
+        # Local API/Worker processes cannot share an in-memory notifier. Keep
+        # unconfigured local setups responsive while Redis deployments retain
+        # their low-frequency lost-notification recovery path.
+        replay_interval = (
+            0.1 if settings.mode == "local" and not settings.redis_url else 2.0
+        )
 
         def validate_authority():
             # A single read composition avoids rebuilding the global principal
@@ -1123,9 +1129,9 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
                     if time.monotonic() - heartbeat_at >= 10:
                         heartbeat_at = time.monotonic()
                         yield ": heartbeat\n\n"
-                    # Lost wakeups, Redis outages and absent Redis recover with
-                    # bounded low-frequency DB replay. Authority is independent.
-                    await watch.wait(observed, timeout=2.0)
+                    # Persisted replay remains authoritative, including when
+                    # the local API and Worker have no cross-process notifier.
+                    await watch.wait(observed, timeout=replay_interval)
 
         return LeasedStreamingResponse(
             stream(),
