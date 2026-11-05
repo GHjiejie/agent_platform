@@ -3281,12 +3281,3 @@ td small,
 .team-dependencies { display: flex; flex-wrap: wrap; gap: 12px; }
 .team-dependencies label { display: flex; align-items: center; gap: 5px; }
 .team-dependencies input { width: auto; }
-
-/* Provider discovery uses existing form/table/modal tokens. */
-.provider-toolbar { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
-.provider-toolbar > .field { flex: 1 1 220px; min-width: 0; margin: 0; }
-.provider-catalog { max-height: 75vh; overflow-y: auto; background: #fff; }
-.provider-catalog .table-scroll { max-height: 340px; overflow: auto; }
-.provider-catalog td:first-child { overflow-wrap: anywhere; }
-.provider-authorization { border-top: 1px solid var(--border); padding-top: 20px; margin-top: 20px; }
-@media (max-width: 640px) { .provider-toolbar > .field { flex-basis: 100%; } .provider-toolbar > button { flex: 1; } }

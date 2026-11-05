@@ -1,3 +1,4 @@
+import "./provider-catalog.css";
 import { useEffect, useRef, useState } from "react";
 import { Download, Plus, RefreshCw } from "lucide-react";
 import { api, dateTime, getTenantId, write } from "./api";
@@ -77,7 +78,7 @@ export function ProviderCatalog({ close, canPrice, changed }: { close: () => voi
     finally { if (alive.current) setSubmitting(false); }
   }
   const items = provider?.catalog.filter((item) => `${item.id} ${item.name}`.toLowerCase().includes(query.toLowerCase())) ?? [];
-  return <Modal title="从服务商获取模型" description="连接兼容 OpenAI 模型列表接口的服务商，获取模型列表，选择支持文本对话的模型接入。" close={close}>
+  return <Modal className="provider-dialog" title="从服务商获取模型" description="连接兼容 OpenAI 模型列表接口的服务商，获取模型列表，选择支持文本对话的模型接入。" close={close}>
     {creating ? <Form close={() => setCreating(false)} label="保存并获取模型" submit={async (form) => {
       const item = await write<ProviderResponse>("/api/v2/platform/providers", { name: formValue(form, "name"), api_base: formValue(form, "api_base"), api_key: formValue(form, "api_key") });
       if (!alive.current) return;
@@ -88,6 +89,7 @@ export function ProviderCatalog({ close, canPrice, changed }: { close: () => voi
       <Field label="API Key" hint="密钥加密保存在服务端，保存后不回显。"><input name="api_key" type="password" autoComplete="new-password" maxLength={8192} required /></Field>
     </Form> : <div className="form-body provider-catalog">
       <ResourceState loading={resource.loading && !resource.data} error={resource.error} retry={() => void resource.reload()}>
+        <section className="provider-connection">
         <div className="provider-toolbar">
           <Field label="服务商"><Select value={provider?.id ?? ""} disabled={busy} onChange={(event) => { setSelected(event.target.value); setQuery(""); setFailure(""); setModel(null); setDeployment(""); setJob(null); }}>
             {!resource.data?.items.length && <option value="">请先添加服务商</option>}
@@ -96,14 +98,17 @@ export function ProviderCatalog({ close, canPrice, changed }: { close: () => voi
           <Button variant="secondary" disabled={busy} onClick={() => setCreating(true)}><Plus size={15} />添加服务商</Button>
           <Button disabled={!provider || busy} busy={busy && job?.kind === "discover"} onClick={() => { if (provider) void discover(provider); }}><RefreshCw size={15} />获取模型</Button>
         </div>
-        {provider && <p className="muted">{provider.api_base} · {provider.catalog_updated_at ? `更新于 ${dateTime(provider.catalog_updated_at)}` : "尚未获取模型"}</p>}
+        {provider && <p className="provider-meta muted">{provider.api_base} · {provider.catalog_updated_at ? `更新于 ${dateTime(provider.catalog_updated_at)}` : "尚未获取模型"}</p>}
+        </section>
         {failure && <div className="form-error" role="alert">{failure}</div>}
         {busy && <p role="status">{job?.kind === "import" ? "正在接入网关，请稍候…" : "正在从服务商获取模型…"}</p>}
-        {!!provider?.catalog.length && <div className="table-toolbar"><SearchBox value={query} onChange={setQuery} placeholder="搜索服务商模型" /><span>{items.length} 个模型</span></div>}
-        {!!items.length && <label className="checkbox-row"><input type="checkbox" checked={tools} disabled={busy} onChange={(event) => setTools(event.target.checked)} />所选模型支持工具调用</label>}
-        {items.length ? <div className="table-scroll"><table><thead><tr><th>服务商模型</th><th>提供方</th><th className="align-right">操作</th></tr></thead><tbody>
+        <section className="provider-models" aria-label="服务商模型列表">
+        {!!provider?.catalog.length && <div className="table-toolbar provider-search-toolbar"><SearchBox value={query} onChange={setQuery} placeholder="搜索服务商模型" /><span>{items.length} 个模型</span></div>}
+        {!!items.length && <label className="checkbox-row provider-model-option"><input type="checkbox" checked={tools} disabled={busy} onChange={(event) => setTools(event.target.checked)} />所选模型支持工具调用</label>}
+        {items.length ? <div className="table-scroll provider-model-table"><table><colgroup><col /><col className="provider-owner-column" /><col className="provider-action-column" /></colgroup><thead><tr><th>服务商模型</th><th>提供方</th><th className="align-right">操作</th></tr></thead><tbody>
           {items.map((item) => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.id}</small></td><td>{item.owned_by || "—"}</td><td className="align-right"><Button variant="secondary" disabled={busy} onClick={() => void importModel(item)}><Download size={14} />接入模型</Button></td></tr>)}
         </tbody></table></div> : !busy && <Empty title={!provider ? "尚未连接服务商" : provider.catalog_updated_at ? query ? "没有匹配的模型" : "服务商未提供可用模型" : "等待获取模型列表"} description={!provider ? "添加服务商地址和 API Key 后即可获取模型，无需修改配置文件。" : "模型列表来自服务商接口，可点击“获取模型”刷新。"} />}
+        </section>
         {deployment && model && canPrice && <ModelAuthorization key={deployment} deployment={deployment} model={model} changed={changed} close={() => { setDeployment(""); setModel(null); }} saved={() => { setDeployment(""); setModel(null); toast("模型已授权，正在同步组织网关权限"); }} />}
       </ResourceState>
     </div>}
@@ -124,10 +129,10 @@ function ModelAuthorization({ deployment, model, changed, saved, close }: { depl
         await write(`${prefix}/gateway/enroll`);
         await changed(); saved();
       }}>
-        <Field label="显示名称"><input name="name" defaultValue={model.name.slice(0, 120)} maxLength={120} required /></Field>
-        <Field label="模型别名"><input name="alias" defaultValue={`${model.id.replace(/[^a-zA-Z0-9_.:/-]/g, "-").slice(0, 175)}-${deployment.slice(0, 12)}`} maxLength={200} pattern="[a-zA-Z0-9_.:/-]+" required /></Field>
-        <div className="form-grid"><Field label="输入价格（USD / 百万 Token）"><input name="input_price" inputMode="decimal" placeholder="请填写" required /></Field><Field label="输出价格（USD / 百万 Token）"><input name="output_price" inputMode="decimal" placeholder="请填写" required /></Field></div>
-        <div className="form-grid"><Field label="上下文上限"><input name="context_window" type="number" min={256} max={2000000} defaultValue={context} required /></Field><Field label="输出上限"><input name="max_output_tokens" type="number" min={1} max={2000000} defaultValue={output} required /></Field></div>
+        <div className="provider-form-grid"><Field label="显示名称"><input name="name" defaultValue={model.name.slice(0, 120)} maxLength={120} required /></Field>
+        <Field label="模型别名"><input name="alias" defaultValue={`${model.id.replace(/[^a-zA-Z0-9_.:/-]/g, "-").slice(0, 175)}-${deployment.slice(0, 12)}`} maxLength={200} pattern="[a-zA-Z0-9_.:/-]+" required /></Field></div>
+        <div className="provider-form-grid"><Field label="输入价格（USD / 百万 Token）"><input name="input_price" inputMode="decimal" placeholder="请填写" required /></Field><Field label="输出价格（USD / 百万 Token）"><input name="output_price" inputMode="decimal" placeholder="请填写" required /></Field></div>
+        <div className="provider-form-grid"><Field label="上下文上限"><input name="context_window" type="number" min={256} max={2000000} defaultValue={context} required /></Field><Field label="输出上限"><input name="max_output_tokens" type="number" min={1} max={2000000} defaultValue={output} required /></Field></div>
       </Form>}
     </ResourceState>
   </section>;

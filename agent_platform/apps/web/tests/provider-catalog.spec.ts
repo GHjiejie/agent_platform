@@ -31,7 +31,7 @@ async function catalogFixture(page: Page, options: { admin?: boolean; failed?: b
   return { ...base, writes, reads: () => providerReads };
 }
 
-test("从空连接创建服务商、获取模型、接入并填写报价授权", async ({ page }) => {
+test("从空连接创建服务商、获取模型、接入并填写报价授权", async ({ page }, info) => {
   const mock = await catalogFixture(page);
   await page.goto("/#models?tenant=team-a");
   await page.getByRole("button", { name: "获取服务商模型", exact: true }).click();
@@ -42,8 +42,10 @@ test("从空连接创建服务商、获取模型、接入并填写报价授权",
   await page.getByLabel("API Key", { exact: true }).fill("mock-upstream-secret");
   await page.getByRole("button", { name: "保存并获取模型", exact: true }).click();
   await expect(page.getByText("服务商实时模型", { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("provider-list-desktop.png"), animations: "disabled" });
   await page.getByRole("button", { name: "接入模型", exact: true }).click();
   await expect(page.getByRole("heading", { name: "确认报价并授权给当前组织", exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("provider-authorization-desktop.png"), animations: "disabled" });
   await page.getByRole("textbox", { name: "输入价格（USD / 百万 Token）", exact: true }).fill("0.3");
   await page.getByRole("textbox", { name: "输出价格（USD / 百万 Token）", exact: true }).fill("1.2");
   await page.getByRole("button", { name: "授权给当前组织", exact: true }).click();
@@ -81,9 +83,11 @@ test("窄屏可搜索模型并展示无匹配状态", async ({ page }, info) => 
   const mock = await catalogFixture(page, { connected: true });
   await page.goto("/#models?tenant=team-a");
   await page.getByRole("button", { name: "获取服务商模型", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "搜索服务商模型", exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("provider-list-mobile.png"), animations: "disabled" });
   await page.getByRole("textbox", { name: "搜索服务商模型", exact: true }).fill("not-found");
   await expect(page.getByText("没有匹配的模型", { exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
-  await page.screenshot({ path: info.outputPath("provider-mobile.png"), fullPage: true });
+  await page.screenshot({ path: info.outputPath("provider-mobile.png"), fullPage: true, animations: "disabled" });
   expect(mock.errors).toEqual([]);
 });

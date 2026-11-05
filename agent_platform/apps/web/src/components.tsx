@@ -343,11 +343,13 @@ export function Modal({
   description,
   close,
   children,
+  className = "",
 }: {
   title: string;
   description?: string;
   close: () => void;
   children: ReactNode;
+  className?: string;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const closeRef = useRef(close);
@@ -392,7 +394,7 @@ export function Modal({
     >
       <div
         ref={ref}
-        className="modal"
+        className={`modal ${className}`.trim()}
         role="dialog"
         aria-modal="true"
         aria-label={title}
