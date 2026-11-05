@@ -1,0 +1,24 @@
+.pg-reasoning-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    grid-template-rows var(--motion-layout, 240ms) var(--motion-ease, ease),
+    opacity var(--motion-feedback, 140ms) ease,
+    visibility 0s linear var(--motion-layout, 240ms);
+}
+.pg-reasoning-collapse.is-expanded {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+  transition-delay: 0s;
+}
+.pg-reasoning-clip { min-height: 0; overflow: hidden; }
+.pg-reasoning-toggle > svg:last-child {
+  transition: transform var(--motion-layout, 240ms) var(--motion-ease, ease);
+}
+@media (prefers-reduced-motion: reduce) {
+  .pg-reasoning-collapse,
+  .pg-reasoning-toggle > svg:last-child { transition: none; }
+}
