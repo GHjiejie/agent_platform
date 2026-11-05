@@ -5,8 +5,8 @@ import {
   Copy, History, LoaderCircle, MessageSquare, Plus,
   Sparkles, Terminal, Wrench,
 } from "lucide-react";
-import { api, dateTime, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
-import { Button, Modal, SearchBox, Select, useResource, useToast } from "./components";
+import { api, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
+import { Button, Modal, Select, useResource, useToast } from "./components";
 import type { Agent, GeneratedArtifact, Model, ReasoningEffort, ReasoningTrace, Run, Session, SessionDetail } from "./types";
 import type { AGUIEvent } from "./ag-ui";
 import { messageRunId } from "./ag-ui";
@@ -14,6 +14,7 @@ import { useAgentRun } from "./useAgentRun";
 import { CollaborationPanel } from "./CollaborationPanel";
 import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
+import { SessionHistory } from "./SessionHistory";
 
 const query = () => new URLSearchParams(location.hash.split("?")[1] ?? "");
 const reasoningOptions: { value: ReasoningEffort; label: string }[] = [
@@ -53,7 +54,6 @@ export function Playground({ name }: { name?: string }) {
   const following = useRef(true);
   const [showLatest, setShowLatest] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyQuery, setHistoryQuery] = useState("");
   const sendKey = useRef<{
     message: string;
     session: string;
@@ -274,7 +274,6 @@ export function Playground({ name }: { name?: string }) {
   const hasMessages = Boolean(detail?.messages.length || activeRun || liveText || liveReasoning.length);
   const availableModels = models.data?.items.filter((model) => model.active) ?? [];
   const automaticModel = availableModels.find((model) => model.id === selectedAgent?.model_id) ?? availableModels.find((model) => model.is_default);
-  const recentSessions = sessions.data?.items.filter((session) => (session.title || "新对话").toLocaleLowerCase().includes(historyQuery.toLocaleLowerCase())) ?? [];
   const suggestions = selectedAgent?.starter_prompts?.length ? selectedAgent.starter_prompts.slice(0, 3) : [
     "请介绍你可以帮我完成哪些工作", "帮我把一个想法整理成行动计划", "把复杂的问题解释得简单一些",
   ];
@@ -295,7 +294,7 @@ export function Playground({ name }: { name?: string }) {
         {(events.length > 0 || activeRun) && <button className="pg-toolbar-button" onClick={() => setShowEvents(true)} aria-label="运行详情">
           <Terminal size={17} /><span>运行详情</span>
         </button>}
-        <button className="pg-toolbar-button" onClick={() => { setHistoryQuery(""); setHistoryOpen(true); void sessions.reload(); }} aria-label="历史对话">
+        <button className="pg-toolbar-button" onClick={() => { setHistoryOpen(true); void sessions.reload(); }} aria-label="历史对话">
           <History size={18} /><span>历史对话</span>
         </button>
         <button className="pg-toolbar-button pg-new-chat" onClick={newSession} disabled={busy} aria-label="新建对话">
@@ -386,16 +385,8 @@ export function Playground({ name }: { name?: string }) {
         <p className="pg-disclaimer">AI 的回答可能不准确，请核实关键信息。</p>
       </div>
     </div>
-    {historyOpen && <Modal title="历史对话" close={() => setHistoryOpen(false)}>
-      <div className="pg-history-body">
-        <SearchBox className="pg-history-search" aria-label="搜索历史对话" placeholder="搜索对话" value={historyQuery} onChange={setHistoryQuery} />
-        {sessions.error && <div className="pg-notice error" role="alert"><span>{sessions.error}</span><button onClick={() => void sessions.reload()}>重试</button></div>}
-        {sessions.loading && !sessions.data ? <div className="pg-loading"><LoaderCircle size={20} className="spin" />正在加载…</div>
-          : recentSessions.length ? <div className="pg-history-list">{recentSessions.map((session) => <button key={session.id} className={session.id === sessionId ? "selected" : ""} disabled={busy} onClick={() => chooseSession(session)}>
-            <MessageSquare size={17} /><span><strong>{session.title || "新对话"}</strong><small>{dateTime(session.created_at)}</small></span><ChevronRight size={16} />
-          </button>)}</div> : <div className="pg-history-empty">{historyQuery ? "没有找到相关对话，试试其他关键词。" : "开始聊天后，对话会保存在这里。"}</div>}
-      </div>
-    </Modal>}
+    {historyOpen && <SessionHistory sessions={sessions.data?.items} loading={sessions.loading} error={sessions.error} reload={sessions.reload}
+      currentSessionId={sessionId} agents={agents.data?.items} tenant={tenantScope} busy={busy} choose={chooseSession} close={() => setHistoryOpen(false)} />}
     {showEvents && <Modal title="运行详情" close={() => setShowEvents(false)}>
       <div className="pg-run-details">
         <p className="pg-run-status">{activeRun ? connection === "retrying" ? "正在恢复实时连接" : "运行进行中" : "本次运行已结束"}</p>

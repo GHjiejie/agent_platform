@@ -1,0 +1,19 @@
+.pg-history-row { display: flex; align-items: center; gap: 6px; }
+.pg-history-list .pg-history-open { flex: 1; width: auto; min-width: 0; }
+.pg-history-open > svg { flex: none; }
+.pg-history-list .pg-history-export {
+  flex: none;
+  width: auto;
+  min-height: 36px;
+  padding: 8px 10px;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--primary);
+  white-space: nowrap;
+}
+.pg-history-list .pg-history-export:hover:not(:disabled) { background: #f3f2f8; }
+@media (max-width: 440px) {
+  .pg-history-row { gap: 2px; }
+  .pg-history-list .pg-history-open { gap: 9px; padding-inline: 8px; }
+  .pg-history-list .pg-history-export { padding-inline: 8px; }
+}

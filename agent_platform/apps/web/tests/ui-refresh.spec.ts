@@ -354,7 +354,7 @@ test("移动端导航、历史对话、下拉浮层均可用且不横向溢出",
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: "历史对话", exact: true }).click();
   await page.getByRole("textbox", { name: "搜索历史对话" }).fill("产品介绍");
-  await page.getByRole("dialog", { name: "历史对话" }).getByRole("button", { name: /产品介绍怎么写/ }).click();
+  await page.getByRole("dialog", { name: "历史对话" }).getByRole("button", { name: "打开对话：产品介绍怎么写？", exact: true }).click();
   await expect(page.getByRole("article", { name: "Agent 的回复" })).toBeVisible();
   await page.screenshot({ path: info.outputPath("playground-conversation-mobile.png"), fullPage: true });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
