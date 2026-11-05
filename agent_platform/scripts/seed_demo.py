@@ -16,6 +16,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import insert, select, update
 
+from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import metering_tables as mt
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
@@ -69,6 +70,16 @@ def seed_demo(
     actor = platform.identity.principal(admin_id)
     if "platform.roles.manage" not in actor["capabilities"]:
         raise ValueError("An existing platform administrator is required")
+    with platform.db.read() as conn:
+        legacy_binding = conn.scalar(
+            select(gt.bindings.c.id).where(gt.bindings.c.mode == "legacy").limit(1)
+        )
+    if legacy_binding:
+        raise ValueError(
+            "创建演示组织前，请先在平台运营的网关面板为现有组织完成网关纳管，"
+            "并确认状态为 ready；新增组织会使旧版单组织网关凭据失效。"
+            "本次尚未创建演示组织或写入演示数据。"
+        )
     tenant = platform.identity.create_tenant(
         actor,
         name=TENANT_NAME,
