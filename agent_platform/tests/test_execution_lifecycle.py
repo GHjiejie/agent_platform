@@ -15,7 +15,7 @@ import httpx
 from alembic import command
 from alembic.config import Config
 from cryptography.fernet import Fernet
-from sqlalchemy import delete, insert, select, text, update
+from sqlalchemy import MetaData, Table, delete, insert, select, text, update
 
 from agent_platform.apps.api.main import COOKIE, LeasedStreamingResponse, create_app
 from agent_platform.apps.worker.main import Worker
@@ -550,7 +550,15 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                     # Seed the historical schema without using today's Agent
                     # table (which now has additional policy columns).
                     platform._bootstrap_admin()
-                    platform.identity.bootstrap()
+                    from agent_platform.infrastructure import tenancy_tables as nt
+
+                    # Reflect historical settings rather than injecting new columns
+                    # into a fixture deliberately migrated only to revision 0007.
+                    historical = Table(
+                        "platform_tenant_settings", MetaData(), autoload_with=db.engine
+                    )
+                    with patch.object(nt, "tenant_settings", historical):
+                        platform.identity.bootstrap()
                     with db.read() as connection:
                         principal = dict(
                             connection.execute(select(t.users)).mappings().one()
@@ -584,9 +592,12 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                         )
                     stamp = datetime.now(UTC).isoformat()
                     deadline = time.time() + 30
+                    historical_runs = Table(
+                        "platform_runs", MetaData(), autoload_with=db.engine
+                    )
                     with db.transaction(f"tenant:{context['tenant_id']}") as connection:
                         connection.execute(
-                            insert(t.runs).values(
+                            insert(historical_runs).values(
                                 id="historical-run",
                                 tenant_id=context["tenant_id"],
                                 user_id=context["id"],
@@ -596,6 +607,8 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                                 spec={},
                                 message="Keep input",
                                 status="running",
+                                error="",
+                                cancel_requested=False,
                                 idempotency_key="historical-key",
                                 request_hash="historical-hash",
                                 owner="old-owner",
@@ -606,8 +619,13 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                         )
                     command.upgrade(config, "0008_execution_deadlines")
                     command.upgrade(config, "0008_execution_deadlines")
+                    historical_runs = Table(
+                        "platform_runs", MetaData(), autoload_with=db.engine
+                    )
                     with db.read() as connection:
-                        run = connection.execute(select(t.runs)).mappings().one()
+                        run = (
+                            connection.execute(select(historical_runs)).mappings().one()
+                        )
                         self.assertAlmostEqual(
                             run["queue_expires_at"],
                             datetime.fromisoformat(stamp).timestamp() + 42,
@@ -628,5 +646,15 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                             ).all(),
                             [],
                         )
+                    command.upgrade(config, "head")
+                    with db.read() as connection:
+                        upgraded = connection.execute(select(t.runs)).mappings().one()
+                        self.assertEqual(upgraded["spec"], {})
+                        self.assertEqual(upgraded["deadline"], deadline)
+                        self.assertEqual(upgraded["message"], "Keep input")
+                        agent = connection.execute(select(t.agents)).mappings().one()
+                        self.assertEqual(agent["execution_mode"], "single")
+                        self.assertTrue(agent["available"])
+                        self.assertEqual(agent["system_prompt"], "Keep prompt")
                 finally:
                     db.close()

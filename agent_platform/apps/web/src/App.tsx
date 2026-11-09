@@ -257,7 +257,7 @@ function Workspace() {
           {safeRoute === "agents" && <AgentsPage admin={canManageAgents} navigate={navigate} />}
           {safeRoute === "playground" && <Playground name={identityName} />}
           {safeRoute === "runs" && <RunsPage navigate={navigate} />}
-          {safeRoute === "models" && <ModelsPage admin={false} canPolicy={!readOnlyTenant && (user.capabilities?.includes("models.policy") ?? false)} />}
+          {safeRoute === "models" && <ModelsPage admin={false} canDiscover={platformCapabilities.includes("platform.models.manage")} canPrice={platformCapabilities.includes("platform.pricing.manage")} canPolicy={!readOnlyTenant && (user.capabilities?.includes("models.policy") ?? false)} />}
           {safeRoute === "users" && <MembersPage user={user} changed={refreshIdentity} />}
           {safeRoute === "support-access" && <OwnerSupportPanel user={user} />}
           {safeRoute === "usage" && <><UsagePage />{user.capabilities?.includes("exports.create") && <TenantExportsPanel user={user} />}</>}

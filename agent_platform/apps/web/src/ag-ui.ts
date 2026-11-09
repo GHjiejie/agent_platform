@@ -18,6 +18,8 @@ export function messageRunId(message: Message): string | undefined {
 const runState = z.object({ run: z.object({
   id: z.string(), session_id: z.string(), tenant_id: z.string(), user_id: z.string(),
   agent_name: z.string(), created_at: z.string(), status: z.string(), error: z.string(),
+  execution_mode: z.enum(["single", "team"]).optional(),
+  outcome: z.string().nullable().optional(),
   model_id: z.string().nullable(), model_alias: z.string().nullable(), finished_at: z.string().nullable(),
 }) });
 
@@ -138,7 +140,7 @@ export function reduceMessages(messages: Message[], event: AGUIEvent): Message[]
       const existing = messages.find((message) => message.id === event.messageId);
       if (existing && existing.role !== "reasoning") throw new ApiError("推理消息标识与其他消息冲突。", 502, "ag_ui_invalid_event");
       return existing ? messages : [...messages, {
-        id: event.messageId, role: "reasoning", content: "", metadata: event.metadata ?? { platform: { reasoning_status: "streaming" } },
+        id: event.messageId, subagentRunId: event.subagentRunId, role: "reasoning", content: "", metadata: event.metadata ?? { platform: { reasoning_status: "streaming" } },
       }];
     }
     case EventType.REASONING_MESSAGE_CONTENT:
@@ -152,11 +154,11 @@ export function reduceMessages(messages: Message[], event: AGUIEvent): Message[]
       } : message);
     case EventType.ACTIVITY_SNAPSHOT:
       return [...messages.filter((message) => message.id !== event.messageId), {
-        id: event.messageId, role: "activity", activityType: event.activityType, content: event.content,
+        id: event.messageId, subagentRunId: event.subagentRunId, role: "activity", activityType: event.activityType, content: event.content,
       }];
     case EventType.TEXT_MESSAGE_START:
       return messages.some((message) => message.id === event.messageId) ? messages : [
-        ...messages, { id: event.messageId, role: event.role ?? "assistant", content: "" },
+        ...messages, { id: event.messageId, subagentRunId: event.subagentRunId, role: event.role ?? "assistant", content: "" },
       ];
     case EventType.TEXT_MESSAGE_CONTENT:
       if (!messages.some((message) => message.id === event.messageId)) throw new ApiError("消息内容缺少开始事件。", 502, "ag_ui_invalid_event");
@@ -167,7 +169,7 @@ export function reduceMessages(messages: Message[], event: AGUIEvent): Message[]
       });
     case EventType.TOOL_CALL_START: {
       const parent = event.parentMessageId ?? `assistant:tool:${event.toolCallId}`;
-      const list = messages.some((message) => message.id === parent) ? messages : [...messages, { id: parent, role: "assistant" as const, content: "" }];
+      const list = messages.some((message) => message.id === parent) ? messages : [...messages, { id: parent, subagentRunId: event.subagentRunId, role: "assistant" as const, content: "" }];
       return list.map((message) => message.id === parent && message.role === "assistant" ? {
         ...message, toolCalls: [...(message.toolCalls ?? []), { id: event.toolCallId, type: "function", function: { name: event.toolCallName, arguments: "" } }],
       } : message);
@@ -177,7 +179,7 @@ export function reduceMessages(messages: Message[], event: AGUIEvent): Message[]
         ...call, function: { ...call.function, arguments: call.function.arguments + event.delta },
       } : call) } : message);
     case EventType.TOOL_CALL_RESULT:
-      return [...messages.filter((message) => message.id !== event.messageId), { id: event.messageId, role: "tool", toolCallId: event.toolCallId, content: event.content }];
+      return [...messages.filter((message) => message.id !== event.messageId), { id: event.messageId, subagentRunId: event.subagentRunId, role: "tool", toolCallId: event.toolCallId, content: event.content }];
     default: return messages;
   }
 }

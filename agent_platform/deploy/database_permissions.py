@@ -214,6 +214,42 @@ ROLE_PRIVILEGES = {
 }
 
 
+ROLE_PRIVILEGES["worker"]["agent_task_leases"] = ("INSERT", "SELECT", "UPDATE")
+ROLE_PRIVILEGES["maintenance"]["agent_task_leases"] = ("SELECT",)
+
+for _table in (
+    "remote_agent_credentials",
+    "remote_agent_versions",
+    "remote_agent_endpoints",
+):
+    ROLE_PRIVILEGES["api"][_table] = ("INSERT", "SELECT", "UPDATE")
+    ROLE_PRIVILEGES["worker"][_table] = (
+        ("SELECT", "UPDATE") if _table == "remote_agent_endpoints" else ("SELECT",)
+    )
+    ROLE_PRIVILEGES["maintenance"][_table] = ("SELECT", "UPDATE")
+ROLE_PRIVILEGES["api"]["remote_agent_credential_secrets"] = ("INSERT",)
+ROLE_PRIVILEGES["worker"]["remote_agent_credential_secrets"] = ("SELECT",)
+ROLE_PRIVILEGES["maintenance"]["remote_agent_credential_secrets"] = ("SELECT", "UPDATE")
+
+# Private journal content is not a public execution projection.
+ROLE_PRIVILEGES["worker"]["execution_journal"] = ("INSERT", "SELECT", "UPDATE")
+ROLE_PRIVILEGES["maintenance"]["execution_journal"] = ("SELECT", "UPDATE")
+for _table in ("execution_checkpoints", "execution_checkpoint_writes"):
+    ROLE_PRIVILEGES["worker"][_table] = ("INSERT", "SELECT", "UPDATE")
+    ROLE_PRIVILEGES["maintenance"][_table] = ("SELECT", "UPDATE")
+
+# Collaboration authority stays with the Worker; API only projects execution state.
+for _table in (
+    "collaboration_plans",
+    "agent_tasks",
+    "agent_executions",
+    "collaboration_artifacts",
+):
+    ROLE_PRIVILEGES["api"][_table] = ("SELECT",)
+    ROLE_PRIVILEGES["worker"][_table] = ("INSERT", "SELECT", "UPDATE")
+    ROLE_PRIVILEGES["maintenance"][_table] = ("SELECT", "UPDATE")
+
+
 def privileges_for(role):
     role = next((key for key, name in ROLE_NAMES.items() if name == role), role)
     return ROLE_PRIVILEGES[role]
@@ -244,6 +280,23 @@ def main():
     args = parser.parse_args()
     print(render_grants(args.role, schema=args.schema, database=args.database))
 
+
+ROLE_PRIVILEGES["api"]["remote_agent_calls"] = ("SELECT", "UPDATE")
+ROLE_PRIVILEGES["worker"]["remote_agent_calls"] = ("INSERT", "SELECT", "UPDATE")
+ROLE_PRIVILEGES["maintenance"]["remote_agent_calls"] = ("SELECT",)
+
+# Provider secrets are write-only to API; model discovery/import runs in the control service.
+from agent_platform.infrastructure.provider_tables import PROVIDER_PRIVILEGES
+
+for _service, _tables in PROVIDER_PRIVILEGES.items():
+    ROLE_PRIVILEGES[_service].update(_tables)
+ROLE_PRIVILEGES["gateway-sync"].update(
+    {
+        "model_deployments": ("INSERT", "SELECT"),
+        "platform_users": ("SELECT",),
+        "platform_roles": ("SELECT",),
+    }
+)
 
 if __name__ == "__main__":
     main()

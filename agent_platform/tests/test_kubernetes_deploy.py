@@ -73,6 +73,31 @@ class KubernetesDeploymentTests(unittest.TestCase):
         cluster.settings.assert_not_called()
         applied = [r for call in cluster.apply.call_args_list for r in call.args[0]]
         self.assertFalse(any(r["kind"] == "Secret" for r in applied))
+        config = next(
+            r["data"]
+            for r in applied
+            if r["kind"] == "ConfigMap" and r["metadata"]["name"] == "litellm-config"
+        )
+        self.assertEqual(
+            config["platform_native_streaming.py"],
+            (
+                k.PLATFORM / "charts/litellm/files/platform_native_streaming.py"
+            ).read_text(),
+        )
+        gateway = next(
+            r
+            for r in applied
+            if r["kind"] == "Deployment" and r["metadata"]["name"] == "litellm"
+        )
+        self.assertIn(
+            {
+                "name": "config",
+                "mountPath": "/app/platform_native_streaming.py",
+                "subPath": "platform_native_streaming.py",
+                "readOnly": True,
+            },
+            gateway["spec"]["template"]["spec"]["containers"][0]["volumeMounts"],
+        )
         for resource in applied:
             if resource["kind"] == "StatefulSet":
                 self.assertEqual(resource["spec"]["replicas"], 1)

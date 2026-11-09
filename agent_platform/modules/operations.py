@@ -34,8 +34,12 @@ from sqlalchemy import (
     update,
 )
 
+from agent_platform.infrastructure import checkpoint_tables as cpt
+from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import gateway_tables as gt
+from agent_platform.infrastructure import journal_tables as jt
 from agent_platform.infrastructure import operations_tables as ot
+from agent_platform.infrastructure import remote_agent_tables as rat
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.errors import PlatformError
@@ -400,11 +404,13 @@ class OperationsService:
         return self._export_user(connection, user, job["scope"], captured=job)
 
     def _generate_export(self, job):
+        from agent_platform.modules.remote_agents.projections import call_projection
+
         with self.db.transaction("tenant:" + job["tenant_id"]) as connection:
             self._export_guard(connection, job)
             self._captured_user(connection, job)
             table, names = (
-                (t.calls, CALL_COLUMNS)
+                (call_projection(), CALL_COLUMNS)
                 if job["kind"] == "calls"
                 else (t.runs, RUN_COLUMNS)
             )
@@ -418,8 +424,8 @@ class OperationsService:
                             (receipt.c.status == "reserved", "running"),
                             (receipt.c.status.is_not(None), receipt.c.status),
                             (
-                                t.calls.c.status.in_(("rejected", "admitting")),
-                                t.calls.c.status,
+                                table.c.status.in_(("rejected", "admitting")),
+                                table.c.status,
                             ),
                             else_="pending_evidence",
                         ).label("status"),
@@ -449,11 +455,11 @@ class OperationsService:
             )
             if job["kind"] == "calls":
                 query = query.select_from(
-                    t.calls.outerjoin(
+                    table.outerjoin(
                         reservations_table,
                         and_(
-                            reservations_table.c.tenant_id == t.calls.c.tenant_id,
-                            reservations_table.c.call_id == t.calls.c.id,
+                            reservations_table.c.tenant_id == table.c.tenant_id,
+                            reservations_table.c.call_id == table.c.id,
                         ),
                     )
                 )
@@ -998,6 +1004,10 @@ class OperationsService:
             t.calls,
             nt.invitations,
             reservations_table,
+            *ct.COLLABORATION_TABLES,
+            *jt.JOURNAL_TABLES,
+            *cpt.CHECKPOINT_TABLES,
+            *rat.REMOTE_TABLES,
         )
         if phase == 0:
             self._expire_exports(tenant_id, all_jobs=True)
@@ -1095,8 +1105,53 @@ class OperationsService:
                                 "spec": self._redacted_spec(row["spec"]),
                                 "error": "",
                             }
+                        elif table is ct.plans:
+                            values = {"plan": {"content_deleted": True}}
+                        elif table is ct.tasks:
+                            values = {"objective": "", "error": ""}
+                        elif table is ct.executions:
+                            values = {
+                                "input": {},
+                                "output": None,
+                                "error": "",
+                                "spec": self._redacted_spec(row["spec"]),
+                            }
+                        elif table is ct.artifacts:
+                            values = {"content": {"content_deleted": True}}
+                        elif table is jt.journal:
+                            values = {
+                                "request_ciphertext": "",
+                                "result_ciphertext": None,
+                                "request_digest": "",
+                                "result_digest": None,
+                            }
+                        elif table in cpt.CHECKPOINT_TABLES:
+                            values = {"payload_ciphertext": "", "payload_digest": ""}
+                        elif table is rat.credentials:
+                            values = {"name": "[已删除]", "active": False}
+                        elif table is rat.secrets:
+                            values = {"ciphertext": "", "digest": ""}
+                        elif table is rat.versions:
+                            values = {
+                                "descriptor": {"content_deleted": True},
+                                "digest": "",
+                                "enabled": False,
+                            }
+                        elif table is rat.endpoints:
+                            values = {
+                                "url": "",
+                                "health_status": "disabled",
+                                "health_until": 0,
+                                "health_error": "",
+                                "probe_owner": None,
+                                "probe_until": None,
+                                "probe_fence": table.c.probe_fence + 1,
+                            }
                         elif table is t.agents:
                             values = {
+                                "capability_keys": [],
+                                "task_contracts": [],
+                                "collaboration_spec": None,
                                 "system_prompt": "",
                                 "description": "",
                                 "tools": [],

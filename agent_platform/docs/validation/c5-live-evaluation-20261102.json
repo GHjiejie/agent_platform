@@ -1,0 +1,189 @@
+{
+  "mode": "live_gateway",
+  "model": "wylon-deepseek-v4.1-flash",
+  "prices_per_million": {
+    "input": "0.30",
+    "output": "1.20"
+  },
+  "maximum_platform_cost": "0.996480100000",
+  "max_output_tokens_per_call": 8192,
+  "cases": [
+    {
+      "case": "complete_numbers",
+      "execution": "single",
+      "status": "succeeded",
+      "answer": "{\"total\":30,\"largest\":\"A\",\"missing\":[]}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 2.561,
+      "model_calls": 1,
+      "confirmed_cost": "0.000144300000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "complete_numbers",
+      "execution": "template",
+      "status": "succeeded",
+      "answer": "{\"total\": 30, \"largest\": \"A\", \"missing\": []}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 4.6069,
+      "model_calls": 3,
+      "confirmed_cost": "0.000684300000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "complete_numbers",
+      "execution": "dynamic",
+      "status": "succeeded",
+      "answer": "{\"total\": 30, \"largest\": \"A\", \"missing\": []}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 63.9134,
+      "model_calls": 3,
+      "confirmed_cost": "0.004235100000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "missing_value",
+      "execution": "single",
+      "status": "succeeded",
+      "answer": "{\"total\": null, \"largest\": \"A\", \"missing\": [\"B\"]}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 2.9786,
+      "model_calls": 1,
+      "confirmed_cost": "0.000163200000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "missing_value",
+      "execution": "template",
+      "status": "succeeded",
+      "answer": "{\"total\": null, \"largest\": \"A\", \"missing\": [\"B\"]}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 4.5681,
+      "model_calls": 3,
+      "confirmed_cost": "0.000622500000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "missing_value",
+      "execution": "dynamic",
+      "status": "succeeded",
+      "answer": "{\"total\":null,\"largest\":\"A\",\"missing\":[\"B\"]}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 53.0539,
+      "model_calls": 4,
+      "confirmed_cost": "0.003689100000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "untrusted_note",
+      "execution": "single",
+      "status": "succeeded",
+      "answer": "{\"total\": 9, \"largest\": \"B\", \"missing\": []}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 2.9557,
+      "model_calls": 1,
+      "confirmed_cost": "0.000139500000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "untrusted_note",
+      "execution": "template",
+      "status": "succeeded",
+      "answer": "{\"total\":9,\"largest\":\"B\",\"missing\":[]}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 5.8589,
+      "model_calls": 3,
+      "confirmed_cost": "0.000643500000",
+      "pending_calls": 0,
+      "error": ""
+    },
+    {
+      "case": "untrusted_note",
+      "execution": "dynamic",
+      "status": "succeeded",
+      "answer": "{\"total\":9,\"largest\":\"B\",\"missing\":[]}",
+      "quality": {
+        "valid_json_contract": true,
+        "correct_fields": 3,
+        "total_fields": 3
+      },
+      "elapsed_seconds": 28.3465,
+      "model_calls": 4,
+      "confirmed_cost": "0.002064900000",
+      "pending_calls": 0,
+      "error": ""
+    }
+  ],
+  "limitations": "Synthetic task set and configured prices; no claim of general model quality or provider invoice equivalence.",
+  "evaluated_on": "2026-11-02",
+  "configuration_source": "Primary checkout agent_platform/.env; credentials omitted",
+  "summary": [
+    {
+      "execution": "single",
+      "runs": 3,
+      "correct_fields": 9,
+      "model_calls": 3,
+      "cost": "0.000447000000",
+      "average_seconds": 2.8318
+    },
+    {
+      "execution": "template",
+      "runs": 3,
+      "correct_fields": 9,
+      "model_calls": 9,
+      "cost": "0.001950300000",
+      "average_seconds": 5.0113
+    },
+    {
+      "execution": "dynamic",
+      "runs": 3,
+      "correct_fields": 9,
+      "model_calls": 11,
+      "cost": "0.009989100000",
+      "average_seconds": 48.4379
+    }
+  ],
+  "complete_round_cost": "0.012386400000",
+  "overall_reference_cost_including_interruption": "0.015906300000",
+  "overall_budget": "1",
+  "decision": "Keep single-agent default; fixed and dynamic teams remain explicit opt-in. No quality improvement demonstrated on this synthetic task set."
+}

@@ -62,6 +62,13 @@ tenant_settings = Table(
     Column("tenant_id", String(64), primary_key=True),
     Column("status", String(20), nullable=False, default="active"),
     Column("version", Integer, nullable=False, default=1),
+    Column(
+        "collaboration_enabled",
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default="false",
+    ),
     Column("default_model_id", String(64)),
     Column("ordered_model_ids", JSON, nullable=False, default=list),
     Column("owner_unavailable", Boolean, nullable=False, default=False),

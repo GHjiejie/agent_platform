@@ -5,16 +5,18 @@ import {
   Copy, History, LoaderCircle, MessageSquare, Plus,
   Sparkles, Terminal, Wrench,
 } from "lucide-react";
-import { api, dateTime, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
-import { Button, Modal, SearchBox, Select, useResource, useToast } from "./components";
+import { api, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
+import { Button, Modal, Select, useResource, useToast } from "./components";
 import type { Agent, GeneratedArtifact, Model, ReasoningEffort, ReasoningTrace, Run, Session, SessionDetail } from "./types";
 import type { AGUIEvent } from "./ag-ui";
 import { messageRunId } from "./ag-ui";
 import { useAgentRun } from "./useAgentRun";
 import { useChatScroll } from "./useChatScroll";
 import { MessageMarkdown } from "./MessageMarkdown";
+import { CollaborationPanel } from "./CollaborationPanel";
 import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
+import { SessionHistory } from "./SessionHistory";
 
 const query = () => new URLSearchParams(location.hash.split("?")[1] ?? "");
 const reasoningOptions: { value: ReasoningEffort; label: string }[] = [
@@ -51,7 +53,6 @@ export function Playground({ name }: { name?: string }) {
   const { viewport, content: messageContent, showLatest, followLatest } = useChatScroll(sessionId);
   const input = useRef<HTMLTextAreaElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [historyQuery, setHistoryQuery] = useState("");
   const sendKey = useRef<{
     message: string;
     session: string;
@@ -80,12 +81,12 @@ export function Playground({ name }: { name?: string }) {
       const livePrefix = `assistant:${runId}:`;
       const isLiveReply = (id: string) => id === `assistant:${runId}` || id.startsWith(livePrefix);
       setLiveReasoning(messages.flatMap((message) => {
-        const trace = reasoningTrace(message);
+        const trace = message.subagentRunId ? null : reasoningTrace(message);
         return trace?.run_id === runId ? [trace] : [];
       }));
-      setLiveText(messages.filter((message) => message.role === "assistant" && isLiveReply(message.id))
+      setLiveText(messages.filter((message) => !message.subagentRunId && message.role === "assistant" && isLiveReply(message.id))
         .map((message) => typeof message.content === "string" ? message.content : "").filter(Boolean).join("\n\n"));
-      const confirmed = messages.flatMap((message) => ["user", "assistant"].includes(message.role) && typeof message.content === "string" && message.content && !isLiveReply(message.id)
+      const confirmed = messages.flatMap((message) => !message.subagentRunId && ["user", "assistant"].includes(message.role) && typeof message.content === "string" && message.content && !isLiveReply(message.id)
         ? [{ id: message.id, run_id: messageRunId(message), role: message.role, content: message.content }] : []);
       setDetail((current) => {
         if (!current || current.messages.length === confirmed.length && current.messages.every((message, index) =>
@@ -265,7 +266,6 @@ export function Playground({ name }: { name?: string }) {
   const hasMessages = Boolean(detail?.messages.length || activeRun || liveText || liveReasoning.length);
   const availableModels = models.data?.items.filter((model) => model.active) ?? [];
   const automaticModel = availableModels.find((model) => model.id === selectedAgent?.model_id) ?? availableModels.find((model) => model.is_default);
-  const recentSessions = sessions.data?.items.filter((session) => (session.title || "新对话").toLocaleLowerCase().includes(historyQuery.toLocaleLowerCase())) ?? [];
   const suggestions = selectedAgent?.starter_prompts?.length ? selectedAgent.starter_prompts.slice(0, 3) : [
     "请介绍你可以帮我完成哪些工作", "帮我把一个想法整理成行动计划", "把复杂的问题解释得简单一些",
   ];
@@ -286,7 +286,7 @@ export function Playground({ name }: { name?: string }) {
         {(events.length > 0 || activeRun) && <button className="pg-toolbar-button" onClick={() => setShowEvents(true)} aria-label="运行详情">
           <Terminal size={17} /><span>运行详情</span>
         </button>}
-        <button className="pg-toolbar-button" onClick={() => { setHistoryQuery(""); setHistoryOpen(true); void sessions.reload(); }} aria-label="历史对话">
+        <button className="pg-toolbar-button" onClick={() => { setHistoryOpen(true); void sessions.reload(); }} aria-label="历史对话">
           <History size={18} /><span>历史对话</span>
         </button>
         <button className="pg-toolbar-button pg-new-chat" onClick={newSession} disabled={busy} aria-label="新建对话">
@@ -308,6 +308,7 @@ export function Playground({ name }: { name?: string }) {
             {(activeRun || liveText || liveReasoning.length > 0 || liveArtifacts.length > 0) && <article className="pg-message assistant" aria-label={activeRun ? "Agent 正在回复" : "Agent 的回复"}>
               <span className="pg-assistant-icon"><Sparkles size={22} strokeWidth={1.7} /></span>
               <div className="pg-message-content">
+                {activeRun?.execution_mode === "team" && <CollaborationPanel key={activeRun.id} runId={activeRun.id} live refreshKey={[...events].reverse().find((item) => item.event.type === "STATE_SNAPSHOT")?.id} />}
                 {liveReasoning.map((trace) => <Reasoning key={trace.id} trace={trace} streaming={Boolean(activeRun) && trace.status === "streaming"} />)}
                 {liveText ? <div className="pg-message-text"><MessageMarkdown text={liveText} streaming={Boolean(activeRun)} /></div>
                   : !liveReasoning.length && <div className="pg-thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span>{activeRun?.status === "queued" ? "等待执行" : "正在思考"}</div>}
@@ -339,9 +340,9 @@ export function Playground({ name }: { name?: string }) {
             }} />
           <div className="pg-composer-toolbar">
             <div className="pg-run-settings">
-            <Select id="run-model" variant="quiet" className="pg-model-picker" aria-label="本次使用模型" icon={<Sparkles size={15} />}
+            <Select id="run-model" variant="quiet" className="pg-model-picker" aria-label={selectedAgent?.execution_mode === "team" ? "本次协调模型" : "本次使用模型"} icon={<Sparkles size={15} />}
               value={modelId} disabled={busy || Boolean(activeRun) || models.loading} searchable onChange={(event) => setModelId(event.target.value)}>
-              <option value="">{automaticModel ? `${automaticModel.name} · 自动` : selectedAgent?.model_id ? "跟随 Agent 设置" : "自动选择模型"}</option>
+              <option value="">{selectedAgent?.execution_mode === "team" ? "协调模型 · " : ""}{automaticModel ? `${automaticModel.name} · 自动` : selectedAgent?.model_id ? "跟随 Agent 设置" : "自动选择模型"}</option>
               {availableModels.map((model) => <option key={model.id} value={model.id} data-description={model.alias}>{model.name}{model.is_default ? " · 默认" : ""}</option>)}
             </Select>
             <Select id="run-reasoning" variant="quiet" className="pg-reasoning-picker" aria-label="本次思考强度" icon={<Brain size={15} />}
@@ -373,16 +374,15 @@ export function Playground({ name }: { name?: string }) {
         <p className="pg-disclaimer">AI 的回答可能不准确，请核实关键信息。</p>
       </div>
     </div>
-    {historyOpen && <Modal title="历史对话" close={() => setHistoryOpen(false)}>
-      <div className="pg-history-body">
-        <SearchBox className="pg-history-search" aria-label="搜索历史对话" placeholder="搜索对话" value={historyQuery} onChange={setHistoryQuery} />
-        {sessions.error && <div className="pg-notice error" role="alert"><span>{sessions.error}</span><button onClick={() => void sessions.reload()}>重试</button></div>}
-        {sessions.loading && !sessions.data ? <div className="pg-loading"><LoaderCircle size={20} className="spin" />正在加载…</div>
-          : recentSessions.length ? <div className="pg-history-list">{recentSessions.map((session) => <button key={session.id} className={session.id === sessionId ? "selected" : ""} disabled={busy} onClick={() => chooseSession(session)}>
-            <MessageSquare size={17} /><span><strong>{session.title || "新对话"}</strong><small>{dateTime(session.created_at)}</small></span><ChevronRight size={16} />
-          </button>)}</div> : <div className="pg-history-empty">{historyQuery ? "没有找到相关对话，试试其他关键词。" : "开始聊天后，对话会保存在这里。"}</div>}
-      </div>
-    </Modal>}
+    {historyOpen && <SessionHistory sessions={sessions.data?.items} loading={sessions.loading} error={sessions.error} reload={sessions.reload}
+      currentSessionId={sessionId} agents={agents.data?.items} tenant={tenantScope} busy={busy} choose={chooseSession}
+      deleted={(ids, options) => {
+        sessions.setData((current) => current ? { ...current, items: current.items.filter((session) => !ids.includes(session.id)) } : current);
+        if (sessionId && ids.includes(sessionId)) {
+          newSession();
+          if (options?.keepHistoryOpen) setHistoryOpen(true);
+        }
+      }} close={() => setHistoryOpen(false)} />}
     {showEvents && <Modal title="运行详情" close={() => setShowEvents(false)}>
       <div className="pg-run-details">
         <p className="pg-run-status">{activeRun ? connection === "retrying" ? "正在恢复实时连接" : "运行进行中" : "本次运行已结束"}</p>
@@ -410,6 +410,7 @@ const ConversationHistory = memo(function ConversationHistory({ messages, artifa
     <div className="pg-message-content">
       {message.role === "assistant" && traces(message).map((trace) => <Reasoning key={trace.id} trace={trace} />)}
       <div className="pg-message-text">{message.role === "assistant" ? <MessageMarkdown text={message.content} /> : message.content}</div>
+      {message.role === "user" && runId(message) !== hiddenRunId && runs?.find((run) => run.id === runId(message))?.execution_mode === "team" && <CollaborationPanel key={runId(message)} runId={runId(message) ?? ""} />}
       {artifacts?.filter((artifact) => artifact.run_id === runId(message) &&
         (message.role === "assistant" || !messages.some((item) => item.role === "assistant" && runId(item) === artifact.run_id)))
         .map((artifact) => <Artifact key={artifact.id} content={artifact.content}

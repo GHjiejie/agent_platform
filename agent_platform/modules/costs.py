@@ -204,6 +204,44 @@ class CostService:
             self._update_budget(connection, row, reserved=row["reserved"] + amount)
         return values
 
+    def reserve_fixed(self, connection, tenant_id, call_id, amount):
+        """The administrator-published remote quote bounds supplier expense."""
+        amount = _money(amount)
+        self.db.lock(connection, "cost:admission")
+        budget = self._budget(connection, "platform", "platform")
+        if not budget:
+            raise PlatformError(
+                503, "cost_budget_missing", "远程调用需要平台成本预算。"
+            )
+        if (
+            budget["blocked"]
+            or budget["spent"] + budget["reserved"] + amount > budget["limit"]
+        ):
+            raise PlatformError(
+                402, "provider_budget_exceeded", "供应商成本预算不足或需要核实。"
+            )
+        stamp = _now()
+        values = {
+            "id": _id(),
+            "tenant_id": tenant_id,
+            "call_id": call_id,
+            "deployment_id": None,
+            "price_version_id": None,
+            "charge_kind": "fixed",
+            "input_price": ZERO,
+            "output_price": ZERO,
+            "amount": amount,
+            "cost": None,
+            "quality": "remote_quote_bound",
+            "status": "reserved",
+            "budgets": [["platform", "platform"]],
+            "created_at": stamp,
+            "updated_at": stamp,
+        }
+        connection.execute(mt.cost_holds.insert().values(**values))
+        self._update_budget(connection, budget, reserved=budget["reserved"] + amount)
+        return values
+
     @staticmethod
     def _update_budget(connection, row, **changes):
         connection.execute(
@@ -258,6 +296,10 @@ class CostService:
         elif action == "write_off":
             cost, status, quality = row["amount"], "written_off", "written_off_bound"
         else:
+            if row["charge_kind"] == "fixed" and provider_cost is None:
+                raise PlatformError(
+                    409, "remote_fee_missing", "远程成本需要最终金额证据。"
+                )
             cost = (
                 _money(provider_cost, "provider_cost")
                 if provider_cost is not None
@@ -267,7 +309,11 @@ class CostService:
             )
             status, quality = (
                 "settled",
-                "gateway_estimate" if provider_cost is not None else "price_estimate",
+                "remote_final"
+                if row["charge_kind"] == "fixed"
+                else "gateway_estimate"
+                if provider_cost is not None
+                else "price_estimate",
             )
             if row["status"] == "settled" and provider_cost is None:
                 return

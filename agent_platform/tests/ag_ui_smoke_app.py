@@ -89,7 +89,7 @@ class SmokeGateway:
         yield GatewayEvent("result", ModelReply(text, [], 20, 5, {}))
 
 
-def create_smoke_app():
+def create_smoke_app(gateway=None, *, collaboration=False):
     directory = tempfile.TemporaryDirectory(prefix="ag-ui-browser-")
     settings = Settings(
         database_url=f"sqlite:///{Path(directory.name) / 'platform.db'}",
@@ -98,13 +98,14 @@ def create_smoke_app():
         secret_encryption_key=Fernet.generate_key().decode(),
         litellm_url="http://127.0.0.1:1",
         embedded_worker=True,
+        collaboration_enabled=collaboration,
         worker_poll_seconds=0.05,
         run_timeout=0,
         export_directory=Path(directory.name) / "exports",
         tombstone_path=Path(directory.name) / "tombstones.jsonl",
     )
     migrate(settings.database_url)
-    app = create_app(settings, gateway=SmokeGateway())
+    app = create_app(settings, gateway=gateway or SmokeGateway())
     app.state.smoke_directory = directory
     fixture = MultiTenantFixture(app.state.database, settings)
     platform = app.state.platform
@@ -137,4 +138,17 @@ def create_smoke_app():
         "Disposable test balance",
         "smoke-credit",
     )
+    if collaboration:
+        from sqlalchemy import update
+
+        from agent_platform.infrastructure import tenancy_tables as nt
+        from agent_platform.modules.collaboration.templates import install
+
+        install(platform, fixture.owner)
+        with platform.db.transaction(f"tenant:{fixture.tenant_id}") as connection:
+            connection.execute(
+                update(nt.tenant_settings)
+                .where(nt.tenant_settings.c.tenant_id == fixture.tenant_id)
+                .values(collaboration_enabled=True)
+            )
     return app

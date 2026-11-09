@@ -1,13 +1,19 @@
 """Validated, deliberately bounded API requests."""
 
 from decimal import Decimal, InvalidOperation
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from agent_platform.infrastructure.token_defaults import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_OUTPUT_TOKENS,
+)
+from agent_platform.modules.agent_registry.contracts import (
+    AgentDeclaration,
+    Identifier,
+    TaskContract,
+    TeamSpec,
 )
 from agent_platform.modules.execution_policy import (
     MAX_MODEL_CALLS,
@@ -105,7 +111,7 @@ class ModelPatch(StrictModel):
         return ModelCreate.price(value) if value is not None else None
 
 
-class AgentCreate(StrictModel):
+class AgentCreate(StrictModel, AgentDeclaration):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
     system_prompt: str = Field(
@@ -121,7 +127,20 @@ class AgentCreate(StrictModel):
     )
 
 
+class CollaborationSettings(StrictModel):
+    enabled: bool
+    expected_version: int = Field(ge=1)
+
+
+class AgentAvailability(StrictModel):
+    available: bool
+
+
 class AgentPatch(StrictModel):
+    execution_mode: Literal["single", "team"] | None = None
+    capability_keys: list[Identifier] | None = Field(default=None, max_length=32)
+    task_contracts: list[TaskContract] | None = Field(default=None, max_length=16)
+    collaboration_spec: TeamSpec | None = None
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=2000)
     system_prompt: str | None = Field(default=None, min_length=1, max_length=20000)
@@ -138,6 +157,17 @@ class AgentPatch(StrictModel):
 class SessionCreate(StrictModel):
     agent_id: str = Field(min_length=1, max_length=64)
     title: str | None = Field(default=None, max_length=160)
+
+
+class SessionBatchDelete(StrictModel):
+    session_ids: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(
+        min_length=1, max_length=200
+    )
+
+    @field_validator("session_ids")
+    @classmethod
+    def unique_ids(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(value))
 
 
 class RunCreate(StrictModel):
@@ -165,6 +195,7 @@ class Reconcile(StrictModel):
     reason: str = Field(min_length=5, max_length=500)
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    fixed_amount: str | None = None
 
 
 class Unblock(StrictModel):
@@ -296,3 +327,14 @@ class ProjectionRebuild(StrictModel):
 
 class CostReview(ProjectionRebuild):
     expected_version: int = Field(ge=1)
+
+
+class ProviderCreate(StrictModel):
+    name: str = Field(min_length=1, max_length=120)
+    api_base: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(min_length=1, max_length=8192, pattern=r"^[!-~]+$")
+
+
+class ProviderModelImport(StrictModel):
+    model_id: str = Field(min_length=1, max_length=200)
+    tools: bool = False

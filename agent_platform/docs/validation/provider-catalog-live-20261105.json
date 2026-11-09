@@ -1,0 +1,9 @@
+{
+  "checked_on": "2026-11-05",
+  "provider": "Wylon",
+  "discovery_status": "succeeded",
+  "discovered_models": 7,
+  "gateway_import_status": "succeeded",
+  "platform_deployment_confirmed": true,
+  "paid_model_requests_sent": 0
+}

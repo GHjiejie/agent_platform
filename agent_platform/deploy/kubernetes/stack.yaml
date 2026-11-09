@@ -38,6 +38,16 @@ items:
       PLATFORM_WORKER_CONCURRENCY: "4"
       PLATFORM_RUN_TIMEOUT: "0"
       PLATFORM_MODEL_TIMEOUT: "90"
+      PLATFORM_COLLABORATION_ENABLED: "false"
+      PLATFORM_COLLABORATION_DYNAMIC_ENABLED: "false"
+      PLATFORM_COLLABORATION_PARALLEL_ENABLED: "false"
+      PLATFORM_COLLABORATION_DURABLE_ENABLED: "false"
+      PLATFORM_COLLABORATION_RECOVERY_ENABLED: "false"
+      PLATFORM_REMOTE_AGENTS_ENABLED: "false"
+      PLATFORM_REMOTE_AGENT_ALLOWED_ORIGINS: "[]"
+      PLATFORM_COLLABORATION_DISTRIBUTED_ENABLED: "false"
+      PLATFORM_COLLABORATION_MAX_ACTIVE_MEMBERS: "8"
+      PLATFORM_COLLABORATION_CAPACITY_WAIT_SECONDS: "30"
       PLATFORM_MAX_RUN_COST: "1"
       PLATFORM_EXPORT_DIRECTORY: /app/agent_platform/.data/exports
       PLATFORM_TOMBSTONE_PATH: /app/agent_platform/.tombstones/tenant-tombstones.jsonl
@@ -200,6 +210,7 @@ items:
                 failureThreshold: 6
               volumeMounts:
                 - {name: config, mountPath: /app/platform-config.yaml, subPath: litellm.yaml, readOnly: true}
+                - {name: config, mountPath: /app/platform_native_streaming.py, subPath: platform_native_streaming.py, readOnly: true}
           volumes: [{name: config, configMap: {name: litellm-config}}]
   - apiVersion: v1
     kind: Service

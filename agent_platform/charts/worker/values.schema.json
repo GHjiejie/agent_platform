@@ -207,6 +207,44 @@
         "maxRunCost": {
           "type": "string",
           "pattern": "^[0-9]+(\\.[0-9]+)?$"
+        },
+        "collaborationEnabled": {
+          "type": "boolean"
+        },
+        "collaborationDynamicEnabled": {
+          "type": "boolean"
+        },
+        "collaborationParallelEnabled": {
+          "type": "boolean"
+        },
+        "collaborationMaxActiveMembers": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "collaborationCapacityWaitSeconds": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 300
+        },
+        "collaborationDurableEnabled": {
+          "type": "boolean"
+        },
+        "collaborationDistributedEnabled": {
+          "type": "boolean"
+        },
+        "collaborationRecoveryEnabled": {
+          "type": "boolean"
+        },
+        "remoteAgentsEnabled": {
+          "type": "boolean"
+        },
+        "remoteAgentAllowedOrigins": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^https://"
+          },
+          "uniqueItems": true
         }
       },
       "required": [

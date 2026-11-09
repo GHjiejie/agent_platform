@@ -73,6 +73,9 @@ async def execute_agent(
     invoke: Invoke,
     emit: Emit,
     cancelled: Cancelled,
+    *,
+    journal=None,
+    namespace="initial",
 ) -> str:
     """Execute at most ``max_steps`` model calls using the native v3 stream.
 
@@ -119,9 +122,26 @@ async def execute_agent(
         if state["step"] >= max_steps:
             raise StepLimitExceeded()
         step = state["step"] + 1
-        await emit("step.started", {"step": step})
+        event_key = (
+            {"_operation_key": f"{namespace}:model:{step}"}
+            if journal is not None
+            else {}
+        )
+        await emit("step.started", {"step": step, **event_key})
+
+        async def invoke_model(messages, tools):
+            if journal is not None:
+                return await journal.worker.invocation.invoke(
+                    journal.context,
+                    messages,
+                    tools,
+                    journal=journal,
+                    operation_key=f"{namespace}:model:{step}",
+                )
+            return await invoke(messages, tools)
+
         reply = await _cancellable_invoke(
-            invoke, state["messages"], definitions, cancelled
+            invoke_model, state["messages"], definitions, cancelled
         )
         await guard()
         if reply.raw_usage.get("finish_reason") == "length":
@@ -212,6 +232,7 @@ async def execute_agent(
                 "step": step,
                 "input_tokens": reply.input_tokens,
                 "output_tokens": reply.output_tokens,
+                **event_key,
             },
         )
         return {
@@ -228,33 +249,50 @@ async def execute_agent(
         additions: list[dict] = []
         for call in state["pending_tools"]:
             await guard()
+            event_key = (
+                {"_operation_key": f"{namespace}:tool:{state['step']}:{call['id']}"}
+                if journal is not None
+                else {}
+            )
             await emit(
                 "tool.started",
                 {
                     "id": call["id"],
                     "name": call["name"],
                     "args": call["args"] if isinstance(call.get("args"), dict) else {},
+                    **event_key,
                 },
             )
             try:
                 if not isinstance(call.get("args"), dict):
                     raise TypeError("工具参数必须为 JSON 对象。")
-                output = execute_tool(call["name"], call["args"], allowed)
-                data = {"ok": True, **output}
+                if journal is not None:
+                    data = await asyncio.to_thread(
+                        journal.execute_tool,
+                        f"{namespace}:tool:{state['step']}:{call['id']}",
+                        call["name"],
+                        call["args"],
+                    )
+                else:
+                    output = execute_tool(call["name"], call["args"], allowed)
+                    data = {"ok": True, **output}
             except (ValueError, TypeError) as exc:
                 # Validation errors do not execute a tool or escape the allowlist.
                 # Do not echo arbitrary model-supplied arguments into the error.
                 message = str(exc) if type(exc) is ValueError else "工具参数校验失败。"
                 data = {"ok": False, "error": message}
             await emit(
-                "tool.finished", {"id": call["id"], "name": call["name"], **data}
+                "tool.finished",
+                {"id": call["id"], "name": call["name"], **data, **event_key},
             )
             if call["name"] == UI_TOOL and data["ok"]:
                 await guard()
                 await emit(
                     "artifact.created",
                     {
-                        "id": f"{state['step']}:{call['id']}",
+                        "id": f"{namespace}:{state['step']}:{call['id']}"
+                        if journal is not None
+                        else f"{state['step']}:{call['id']}",
                         "content": GeneratedUiArguments.model_validate(
                             call["args"]
                         ).model_dump(),
@@ -284,7 +322,14 @@ async def execute_agent(
         ),
     )
     builder.add_edge("tools", "model")
-    graph = builder.compile()
+    checkpointer = None
+    config = {"recursion_limit": max_steps * 2 + 2}
+    if journal is not None:
+        from .checkpoints import ExecutionCheckpointer
+
+        checkpointer = ExecutionCheckpointer(journal, namespace)
+        config.update(checkpointer.config())
+    graph = builder.compile(checkpointer=checkpointer)
     initial: AgentState = {
         "messages": history,
         "step": 0,
@@ -293,8 +338,10 @@ async def execute_agent(
         "output_recoveries": 0,
         "retry_output": False,
     }
+    if checkpointer is not None and await checkpointer.aget_tuple(config) is not None:
+        initial = None
     async with await graph.astream_events(
-        initial, config={"recursion_limit": max_steps * 2 + 2}, version="v3"
+        initial, config=config, version="v3"
     ) as stream:
         # Consume real graph state events; invoke and tool callbacks emit the
         # durable platform protocol without exposing LangGraph's internal schema.

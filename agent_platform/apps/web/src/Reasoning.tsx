@@ -3,6 +3,7 @@ import { Brain, ChevronDown } from "lucide-react";
 import type { AgentMessage } from "./ag-ui";
 import type { ReasoningTrace } from "./types";
 import { MessageMarkdown } from "./MessageMarkdown";
+import "./reasoning.css";
 
 export function reasoningTrace(message: AgentMessage): ReasoningTrace | null {
   if (message.role !== "reasoning") return null;
@@ -24,8 +25,12 @@ export function Reasoning({ trace, streaming = trace.status === "streaming" }: {
     <button type="button" className="pg-reasoning-toggle" aria-expanded={expanded} aria-controls={id} onClick={() => setExpanded((value) => !value)}>
       <Brain size={16} /><span>{title}</span><ChevronDown size={15} className={expanded ? "expanded" : ""} />
     </button>
-    <div id={id} className="pg-reasoning-content" hidden={!expanded}>
-      {trace.content ? <MessageMarkdown text={trace.content} streaming={streaming && expanded} /> : trace.status === "streaming" ? "正在分析问题…" : "未返回可展示的推理内容。"}
+    <div id={id} className={`pg-reasoning-collapse${expanded ? " is-expanded" : ""}`} aria-hidden={!expanded} inert={!expanded}>
+      <div className="pg-reasoning-clip">
+        <div className="pg-reasoning-content">
+          {trace.content ? <MessageMarkdown text={trace.content} streaming={streaming && expanded} /> : trace.status === "streaming" ? "正在分析问题…" : "未返回可展示的推理内容。"}
+        </div>
+      </div>
     </div>
   </section>;
 }

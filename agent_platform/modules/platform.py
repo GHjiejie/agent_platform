@@ -23,6 +23,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 
+from agent_platform.infrastructure import collaboration_tables as ct
 from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import runtime_tables as rt
 from agent_platform.infrastructure import tables as t
@@ -137,12 +138,26 @@ class Platform:
                     if template.key in installed:
                         continue
                     if template.key == DEFAULT_AGENT_KEY:
+                        published_team = (
+                            select(t.agent_versions.c.agent_id)
+                            .where(
+                                t.agent_versions.c.tenant_id == tenant_id,
+                                t.agent_versions.c.agent_id == t.agents.c.id,
+                                t.agent_versions.c.version
+                                == t.agents.c.published_version,
+                                t.agent_versions.c.spec["execution_mode"].as_string()
+                                == "team",
+                            )
+                            .exists()
+                        )
                         existing = connection.scalar(
                             select(t.agents.c.id)
                             .where(
                                 t.agents.c.tenant_id == tenant_id,
                                 t.agents.c.builtin_key.is_(None),
                                 t.agents.c.name == "normal",
+                                t.agents.c.execution_mode == "single",
+                                ~published_team,
                             )
                             .order_by(t.agents.c.created_at, t.agents.c.id)
                             .limit(1)
@@ -176,6 +191,11 @@ class Platform:
                         "tools": list(template.tools),
                         "published_version": 1,
                     }
+                    from agent_platform.modules.agent_registry.contracts import (
+                        AgentDeclaration,
+                    )
+
+                    agent.update(AgentDeclaration.from_spec(agent).model_dump())
                     connection.execute(insert(t.agents).values(**agent))
                     connection.execute(
                         insert(t.agent_versions).values(
@@ -202,6 +222,48 @@ class Platform:
         )
         if not retired:
             return
+        # Team drafts and published snapshots pin member IDs and versions.
+        # Retain those agents, and any versions referenced by execution history.
+        referenced = set()
+        for team_id, spec in connection.execute(
+            select(t.agents.c.id, t.agents.c.collaboration_spec)
+            .where(
+                t.agents.c.tenant_id == tenant_id, t.agents.c.execution_mode == "team"
+            )
+            .union_all(
+                select(
+                    t.agent_versions.c.agent_id,
+                    t.agent_versions.c.spec["collaboration_spec"],
+                ).where(
+                    t.agent_versions.c.tenant_id == tenant_id,
+                    t.agent_versions.c.spec["execution_mode"].as_string() == "team",
+                )
+            )
+        ):
+            referenced.add(team_id)
+            referenced.update(member["agent_id"] for member in spec["members"])
+        for table in (ct.tasks, ct.executions):
+            referenced.update(
+                connection.scalars(
+                    select(table.c.agent_id)
+                    .where(
+                        table.c.tenant_id == tenant_id, table.c.agent_id.in_(retired)
+                    )
+                    .distinct()
+                )
+            )
+        retained = sorted(referenced.intersection(retired))
+        if retained:
+            connection.execute(
+                update(t.agents)
+                .where(t.agents.c.tenant_id == tenant_id, t.agents.c.id.in_(retained))
+                .values(builtin_key=None)
+            )
+            for agent_id in retained:
+                audit(connection, owner, "agent.detach_builtin", agent_id)
+            retired = [agent_id for agent_id in retired if agent_id not in referenced]
+            if not retired:
+                return
         sessions = select(t.sessions.c.id).where(
             t.sessions.c.tenant_id == tenant_id, t.sessions.c.agent_id.in_(retired)
         )
@@ -557,6 +619,8 @@ class Platform:
         cursor: str | None = None,
     ) -> list[dict]:
         query = select(table).where(table.c.tenant_id == user["tenant_id"])
+        if table is t.sessions:
+            query = query.where(table.c.deleted_at.is_(None))
         if own:
             require_capability(user, "runs.read_own")
             query = query.where(table.c.user_id == user["id"])
@@ -582,6 +646,8 @@ class Platform:
         query = select(table).where(
             table.c.id == resource_id, table.c.tenant_id == user["tenant_id"]
         )
+        if table is t.sessions:
+            query = query.where(table.c.deleted_at.is_(None))
         if own:
             require_capability(user, "runs.read_own")
             query = query.where(table.c.user_id == user["id"])
@@ -719,117 +785,166 @@ class Platform:
 
     def save_agent(self, user: dict, values: dict, agent_id: str | None = None) -> dict:
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
-            self.require_current(connection, user, admin=True)
-            if not agent_id:
-                maximum = connection.scalar(
-                    select(nt.entitlements.c.max_agents).where(
-                        nt.entitlements.c.tenant_id == user["tenant_id"]
-                    )
+            return self._save_agent(connection, user, values, agent_id)
+
+    def _save_agent(
+        self,
+        connection,
+        user: dict,
+        values: dict,
+        agent_id: str | None = None,
+        *,
+        managed_remote=False,
+    ) -> dict:
+        self.require_current(connection, user, admin=True)
+        if not agent_id:
+            maximum = connection.scalar(
+                select(nt.entitlements.c.max_agents).where(
+                    nt.entitlements.c.tenant_id == user["tenant_id"]
                 )
-                count = connection.scalar(
-                    select(func.count())
-                    .select_from(t.agents)
-                    .where(t.agents.c.tenant_id == user["tenant_id"])
+            )
+            count = connection.scalar(
+                select(func.count())
+                .select_from(t.agents)
+                .where(t.agents.c.tenant_id == user["tenant_id"])
+            )
+            if maximum is not None and count >= maximum:
+                raise PlatformError(
+                    429, "agent_limit", "组织 Agent 数量已达到套餐上限。"
                 )
-                if maximum is not None and count >= maximum:
-                    raise PlatformError(
-                        429, "agent_limit", "组织 Agent 数量已达到套餐上限。"
-                    )
-            current = (
-                self.owned(connection, t.agents, user, agent_id)
-                if agent_id
-                else {
-                    "id": uid(),
-                    "tenant_id": user["tenant_id"],
-                    "created_at": now(),
-                    "published_version": 0,
+        current = (
+            self.owned(connection, t.agents, user, agent_id)
+            if agent_id
+            else {
+                "id": uid(),
+                "tenant_id": user["tenant_id"],
+                "created_at": now(),
+                "published_version": 0,
+            }
+        )
+        if (
+            current.get("remote_ref") or values.get("remote_ref")
+        ) and not managed_remote:
+            raise PlatformError(
+                409,
+                "remote_managed_agent",
+                "远程 Agent 配置请通过远程版本注册接口更新。",
+            )
+        result = {**current, **values}
+        from agent_platform.modules.agent_registry.contracts import AgentDeclaration
+
+        try:
+            result.update(AgentDeclaration.from_spec(result).model_dump())
+        except ValueError as exc:
+            raise PlatformError(422, "invalid_agent_declaration", str(exc)) from None
+        try:
+            # A nested PATCH merges declared fields; explicit null resets
+            # an inherited field. Empty object resets the whole policy.
+            if values.get("execution_policy"):
+                result["execution_policy"] = {
+                    **current.get("execution_policy", {}),
+                    **values["execution_policy"],
                 }
+            policy = read_policy(result)
+        except ValueError:
+            raise PlatformError(
+                422, "invalid_execution_policy", "Agent 执行策略无效。"
+            ) from None
+        if (
+            policy.timeout_seconds
+            and self.settings.run_timeout
+            and policy.timeout_seconds > self.settings.run_timeout
+        ):
+            raise PlatformError(
+                400,
+                "execution_policy_limit",
+                f"运行时限不能超过平台上限 {self.settings.run_timeout} 秒。",
             )
-            result = {**current, **values}
-            try:
-                # A nested PATCH merges declared fields; explicit null resets
-                # an inherited field. Empty object resets the whole policy.
-                if values.get("execution_policy"):
-                    result["execution_policy"] = {
-                        **current.get("execution_policy", {}),
-                        **values["execution_policy"],
-                    }
-                policy = read_policy(result)
-            except ValueError:
-                raise PlatformError(
-                    422, "invalid_execution_policy", "Agent 执行策略无效。"
-                ) from None
-            if (
-                policy.timeout_seconds
-                and self.settings.run_timeout
-                and policy.timeout_seconds > self.settings.run_timeout
-            ):
-                raise PlatformError(
-                    400,
-                    "execution_policy_limit",
-                    f"运行时限不能超过平台上限 {self.settings.run_timeout} 秒。",
-                )
-            if policy.max_cost and Decimal(policy.max_cost) > Decimal(
-                self.settings.max_run_cost
-            ):
-                raise PlatformError(
-                    400,
-                    "execution_policy_limit",
-                    f"费用上限不能超过平台上限 {self.settings.max_run_cost} USD。",
-                )
-            result["execution_policy"] = policy.model_dump()
-            if result.get("model_id"):
-                model = self.owned(connection, t.models, user, result["model_id"])
-                if result["max_tokens"] > model["max_output_tokens"]:
-                    raise PlatformError(
-                        400, "output_limit_exceeded", "Agent 输出上限超过模型配置。"
-                    )
-            if agent_id:
-                connection.execute(
-                    update(t.agents).where(t.agents.c.id == agent_id).values(**result)
-                )
-            else:
-                connection.execute(insert(t.agents).values(**result))
-            audit(
-                connection,
-                user,
-                "agent.update" if agent_id else "agent.create",
-                result["id"],
+        if policy.max_cost and Decimal(policy.max_cost) > Decimal(
+            self.settings.max_run_cost
+        ):
+            raise PlatformError(
+                400,
+                "execution_policy_limit",
+                f"费用上限不能超过平台上限 {self.settings.max_run_cost} USD。",
             )
+        result["execution_policy"] = policy.model_dump()
+        if result.get("model_id"):
+            model = self.owned(connection, t.models, user, result["model_id"])
+            if result["max_tokens"] > model["max_output_tokens"]:
+                raise PlatformError(
+                    400, "output_limit_exceeded", "Agent 输出上限超过模型配置。"
+                )
+        if agent_id:
+            connection.execute(
+                update(t.agents).where(t.agents.c.id == agent_id).values(**result)
+            )
+        else:
+            connection.execute(insert(t.agents).values(**result))
+        audit(
+            connection,
+            user,
+            "agent.update" if agent_id else "agent.create",
+            result["id"],
+        )
         return result
 
     def publish(self, user: dict, agent_id: str) -> dict:
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
-            self.require_current(connection, user, admin=True)
-            agent = self.owned(connection, t.agents, user, agent_id)
-            if agent.get("model_id"):
-                model = self.owned(connection, t.models, user, agent["model_id"])
-                if not model["active"]:
-                    raise PlatformError(
-                        400, "model_disabled", "请先启用 Agent 使用的模型。"
-                    )
-            version = agent["published_version"] + 1
-            connection.execute(
-                insert(t.agent_versions).values(
-                    agent_id=agent_id,
-                    version=version,
-                    tenant_id=user["tenant_id"],
-                    spec=agent,
-                    created_at=now(),
+            return self._publish(connection, user, agent_id)
+
+    def _publish(
+        self, connection, user: dict, agent_id: str, *, managed_remote=False
+    ) -> dict:
+        self.require_current(connection, user, admin=True)
+        agent = self.owned(connection, t.agents, user, agent_id)
+        if agent.get("remote_ref") and not managed_remote:
+            raise PlatformError(
+                409, "remote_managed_agent", "远程 Agent 版本由远程注册接口发布。"
+            )
+        if agent.get("model_id"):
+            model = self.owned(connection, t.models, user, agent["model_id"])
+            if not model["active"]:
+                raise PlatformError(
+                    400, "model_disabled", "请先启用 Agent 使用的模型。"
                 )
+        from agent_platform.modules.agent_registry.contracts import AgentDeclaration
+        from agent_platform.modules.collaboration.team import freeze_team
+
+        agent.update(AgentDeclaration.from_spec(agent).model_dump())
+        team = freeze_team(self, connection, user, agent)
+        if team is not None:
+            agent["team_snapshot"] = team
+        version = agent["published_version"] + 1
+        connection.execute(
+            insert(t.agent_versions).values(
+                agent_id=agent_id,
+                version=version,
+                tenant_id=user["tenant_id"],
+                spec=agent,
+                created_at=now(),
             )
-            connection.execute(
-                update(t.agents)
-                .where(t.agents.c.id == agent_id)
-                .values(published_version=version)
-            )
-            audit(connection, user, "agent.publish", f"{agent_id}:{version}")
+        )
+        connection.execute(
+            update(t.agents)
+            .where(t.agents.c.id == agent_id)
+            .values(published_version=version)
+        )
+        audit(connection, user, "agent.publish", f"{agent_id}:{version}")
         return {"version": version}
 
     def create_session(self, user: dict, agent_id: str, title: str | None) -> dict:
         with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
             self.identity.assert_current(connection, user, "runs.execute")
             agent = self.owned(connection, t.agents, user, agent_id)
+            if not agent["available"]:
+                raise PlatformError(409, "agent_unavailable", "Agent 已停用。")
+            if agent.get("remote_ref"):
+                raise PlatformError(
+                    409,
+                    "remote_team_member_only",
+                    "远程 Agent 通过团队任务接收明确分配的输入，请选择团队入口。",
+                )
             if not agent["published_version"]:
                 raise PlatformError(400, "agent_not_published", "请先发布 Agent。")
             result = {
@@ -842,6 +957,75 @@ class Platform:
             }
             connection.execute(insert(t.sessions).values(**result))
         return result
+
+    def delete_session(self, user: dict, session_id: str) -> dict:
+        # The same tenant lock as enqueue prevents new work from racing deletion.
+        with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
+            self.identity.assert_current(connection, user, "runs.execute")
+            return self._delete_session(connection, user, session_id)
+
+    def delete_sessions(self, user: dict, session_ids: list[str]) -> dict:
+        if not 1 <= len(session_ids) <= 200:
+            raise PlatformError(
+                400, "invalid_session_ids", "每次请选择 1 至 200 条会话。"
+            )
+        deleted_ids, failed = [], []
+        with self.db.transaction(f"tenant:{user['tenant_id']}") as connection:
+            self.identity.assert_current(connection, user, "runs.execute")
+            for session_id in dict.fromkeys(session_ids):
+                try:
+                    self._delete_session(connection, user, session_id)
+                    deleted_ids.append(session_id)
+                except PlatformError as error:
+                    if error.code not in {"not_found", "session_busy"}:
+                        raise
+                    failed.append(
+                        {"id": session_id, "code": error.code, "message": error.message}
+                    )
+        return {"deleted_ids": deleted_ids, "failed": failed}
+
+    def _delete_session(self, connection, user: dict, session_id: str) -> dict:
+        # Both entry points hold the enqueue lock and validate current authority.
+        session = (
+            connection.execute(
+                select(t.sessions).where(
+                    t.sessions.c.id == session_id,
+                    t.sessions.c.tenant_id == user["tenant_id"],
+                    t.sessions.c.user_id == user["id"],
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if not session:
+            raise PlatformError(404, "not_found", "资源不存在或无权访问。")
+        if session["deleted_at"]:
+            return {"id": session_id, "deleted": True}
+        if connection.scalar(
+            select(t.runs.c.id)
+            .where(
+                t.runs.c.tenant_id == user["tenant_id"],
+                t.runs.c.session_id == session_id,
+                t.runs.c.status.in_(ACTIVE_STATUSES),
+            )
+            .limit(1)
+        ):
+            raise PlatformError(
+                409,
+                "session_busy",
+                "会话仍在运行，请先停止生成或等待运行结束后再删除。",
+            )
+        connection.execute(
+            update(t.sessions)
+            .where(
+                t.sessions.c.id == session_id,
+                t.sessions.c.tenant_id == user["tenant_id"],
+                t.sessions.c.user_id == user["id"],
+            )
+            .values(deleted_at=now())
+        )
+        audit(connection, user, "session.delete", session_id)
+        return {"id": session_id, "deleted": True}
 
     def session_detail(self, user: dict, session_id: str) -> dict:
         from agent_platform.modules.reasoning import session_reasoning
@@ -870,6 +1054,139 @@ class Platform:
                 ).mappings()
             ]
         return result
+
+    def freeze_execution_spec(
+        self, connection, user, spec, *, model_id=None, reasoning_effort=None
+    ):
+        # Clone nested JSON: members must never mutate another execution's spec.
+        spec = json.loads(json.dumps(spec))
+        execution_policy = read_policy(spec)
+        if reasoning_effort is not None:
+            execution_policy = read_policy(
+                {
+                    "execution_policy": {
+                        **execution_policy.model_dump(),
+                        "reasoning_effort": reasoning_effort,
+                    }
+                }
+            )
+        spec["execution_policy"] = execution_policy.model_dump()
+        spec["execution_limits"] = effective_limits(execution_policy, self.settings)
+        if spec.get("remote_ref"):
+            from agent_platform.modules.remote_agents.registry import RemoteRegistry
+
+            registration, endpoints = RemoteRegistry(self).eligible(
+                connection, user["tenant_id"], spec["remote_ref"]
+            )
+            if (
+                registration["agent_id"] != spec["id"]
+                or registration["descriptor"]["task_contracts"]
+                != spec["task_contracts"]
+            ):
+                raise PlatformError(
+                    409, "remote_binding_invalid", "远程版本与成员契约不一致。"
+                )
+            if not self.settings.collaboration_durable_enabled:
+                raise PlatformError(
+                    409, "remote_requires_journal", "远程协作需要开启持久执行日志。"
+                )
+            spec["remote_snapshot"] = {
+                "registration_id": registration["id"],
+                "version": registration["version"],
+                "descriptor": registration["descriptor"],
+                "digest": registration["digest"],
+                "endpoint_ids": [point["id"] for point in endpoints],
+            }
+            spec["membership_id"] = user.get("membership_id")
+            return spec
+        policy = (
+            connection.execute(
+                select(nt.tenant_settings).where(
+                    nt.tenant_settings.c.tenant_id == user["tenant_id"]
+                )
+            )
+            .mappings()
+            .one()
+        )
+
+        def eligible_route(candidate):
+            resolved = self.gateway.resolve(
+                user["tenant_id"], candidate, connection=connection
+            )
+            declared = (
+                connection.scalar(
+                    select(gt.deployments.c.capabilities).where(
+                        gt.deployments.c.id == resolved["deployment_id"]
+                    )
+                )
+                or {}
+            )
+            if not declared.get("text") or (
+                spec.get("tools") and not declared.get("tools")
+            ):
+                raise PlatformError(
+                    400,
+                    "model_capability_required",
+                    "该模型部署不具备 Agent 所需的文本或工具能力。",
+                )
+            return resolved
+
+        preferred = model_id or spec.get("model_id")
+        if preferred:
+            model = self.owned(connection, t.models, user, preferred)
+            routing = eligible_route(model)
+        else:
+            rows = (
+                connection.execute(
+                    select(t.models)
+                    .where(
+                        t.models.c.tenant_id == user["tenant_id"],
+                        t.models.c.active.is_(True),
+                    )
+                    .order_by(t.models.c.created_at, t.models.c.id)
+                )
+                .mappings()
+                .all()
+            )
+            catalog = {row["id"]: dict(row) for row in rows}
+            candidates = list(
+                dict.fromkeys(
+                    [
+                        policy["default_model_id"],
+                        *policy["ordered_model_ids"],
+                        *catalog,
+                    ]
+                )
+            )
+            failure = None
+            model = None
+            for candidate in candidates:
+                if candidate not in catalog:
+                    continue
+                try:
+                    candidate_route = eligible_route(catalog[candidate])
+                except PlatformError as exc:
+                    failure = exc
+                    continue
+                model, routing = catalog[candidate], candidate_route
+                break
+            if model is None:
+                raise failure or PlatformError(
+                    400, "no_available_model", "暂无已授权且网关就绪的模型。"
+                )
+        if not model["active"]:
+            raise PlatformError(400, "model_disabled", "该模型已停用。")
+        # Freeze model identity and rate card for every call of this run.
+        if model_id or not spec.get("model_id"):
+            spec["max_tokens"] = min(spec["max_tokens"], model["max_output_tokens"])
+        spec["model_id"] = model["id"]
+        spec["model"] = model
+        spec["deployment_id"] = routing["deployment_id"]
+        spec["route"] = routing["route"]
+        spec["price_version_id"] = routing["price_version_id"]
+        spec["config_version"] = routing["config_version"]
+        spec["membership_id"] = user.get("membership_id")
+        return spec
 
     def enqueue(
         self,
@@ -971,107 +1288,84 @@ class Platform:
             )
             if not version:
                 raise PlatformError(400, "agent_not_published", "Agent 尚未发布。")
+            if not agent["available"]:
+                raise PlatformError(409, "agent_unavailable", "Agent 已停用。")
             spec = dict(version["spec"], version=version["version"])
-            spec["snapshot_schema_version"] = 2
-            execution_policy = read_policy(spec)
-            if reasoning_effort is not None:
-                execution_policy = read_policy(
-                    {
-                        "execution_policy": {
-                            **execution_policy.model_dump(),
-                            "reasoning_effort": reasoning_effort,
-                        }
-                    }
-                )
-            spec["execution_policy"] = execution_policy.model_dump()
-            spec["execution_limits"] = effective_limits(execution_policy, self.settings)
-            policy = (
-                connection.execute(
-                    select(nt.tenant_settings).where(
+            if spec.get("execution_mode") == "team":
+                enabled = connection.scalar(
+                    select(nt.tenant_settings.c.collaboration_enabled).where(
                         nt.tenant_settings.c.tenant_id == user["tenant_id"]
                     )
                 )
-                .mappings()
-                .one()
-            )
-
-            def eligible_route(candidate):
-                resolved = self.gateway.resolve(
-                    user["tenant_id"], candidate, connection=connection
-                )
-                declared = (
-                    connection.scalar(
-                        select(gt.deployments.c.capabilities).where(
-                            gt.deployments.c.id == resolved["deployment_id"]
-                        )
+                if not self.settings.collaboration_enabled or not enabled:
+                    raise PlatformError(
+                        409, "collaboration_disabled", "团队执行尚未开放。"
                     )
-                    or {}
-                )
-                if not declared.get("text") or (
-                    spec.get("tools") and not declared.get("tools")
+            spec["snapshot_schema_version"] = 2
+            spec = self.freeze_execution_spec(
+                connection,
+                user,
+                spec,
+                model_id=model_id,
+                reasoning_effort=reasoning_effort,
+            )
+            if spec.get("execution_mode") == "team":
+                from agent_platform.modules.collaboration.team import freeze_team
+
+                team = freeze_team(self, connection, user, spec)
+                if (
+                    team["definition"]["planning"] == "dynamic"
+                    and not self.settings.collaboration_dynamic_enabled
                 ):
                     raise PlatformError(
-                        400,
-                        "model_capability_required",
-                        "该模型部署不具备 Agent 所需的文本或工具能力。",
+                        409, "dynamic_planning_disabled", "动态协作规划尚未开放。"
                     )
-                return resolved
-
-            preferred = model_id or spec.get("model_id")
-            if preferred:
-                model = self.owned(connection, t.models, user, preferred)
-                routing = eligible_route(model)
-            else:
-                rows = (
-                    connection.execute(
-                        select(t.models)
-                        .where(
-                            t.models.c.tenant_id == user["tenant_id"],
-                            t.models.c.active.is_(True),
-                        )
-                        .order_by(t.models.c.created_at, t.models.c.id)
+                team["features"] = {
+                    "distributed": self.settings.collaboration_distributed_enabled,
+                    "dynamic": self.settings.collaboration_dynamic_enabled,
+                    "parallel": self.settings.collaboration_parallel_enabled,
+                    "durable": self.settings.collaboration_durable_enabled,
+                    "recovery": self.settings.collaboration_durable_enabled
+                    and self.settings.collaboration_recovery_enabled,
+                }
+                if team["features"]["distributed"] and not team["features"]["durable"]:
+                    raise PlatformError(
+                        409,
+                        "distributed_requires_journal",
+                        "跨 Worker 协作需要开启持久执行日志。",
                     )
-                    .mappings()
-                    .all()
+                if (
+                    team["features"]["durable"]
+                    and not self.settings.secret_encryption_key
+                ):
+                    raise PlatformError(
+                        409, "journal_key_missing", "持久执行日志需要配置加密密钥。"
+                    )
+                if (
+                    team["definition"]["max_parallel"] > 1
+                    and not self.settings.collaboration_parallel_enabled
+                ):
+                    raise PlatformError(
+                        409, "parallel_execution_disabled", "成员并行执行尚未开放。"
+                    )
+                for member in team["members"].values():
+                    member["spec"] = self.freeze_execution_spec(
+                        connection, user, member["spec"]
+                    )
+                team["features"]["remote"] = any(
+                    member["spec"].get("remote_snapshot")
+                    for member in team["members"].values()
                 )
-                catalog = {row["id"]: dict(row) for row in rows}
-                candidates = list(
-                    dict.fromkeys(
-                        [
-                            policy["default_model_id"],
-                            *policy["ordered_model_ids"],
-                            *catalog,
-                        ]
-                    )
+                spec["team_snapshot"] = team
+                spec["snapshot_schema_version"] = (
+                    6
+                    if team["features"]["remote"]
+                    else 5
+                    if team["features"]["distributed"]
+                    else 4
+                    if team["features"]["durable"]
+                    else 3
                 )
-                failure = None
-                model = None
-                for candidate in candidates:
-                    if candidate not in catalog:
-                        continue
-                    try:
-                        candidate_route = eligible_route(catalog[candidate])
-                    except PlatformError as exc:
-                        failure = exc
-                        continue
-                    model, routing = catalog[candidate], candidate_route
-                    break
-                if model is None:
-                    raise failure or PlatformError(
-                        400, "no_available_model", "暂无已授权且网关就绪的模型。"
-                    )
-            if not model["active"]:
-                raise PlatformError(400, "model_disabled", "该模型已停用。")
-            # Freeze model identity and rate card for every call of this run.
-            if model_id or not spec.get("model_id"):
-                spec["max_tokens"] = min(spec["max_tokens"], model["max_output_tokens"])
-            spec["model_id"] = model["id"]
-            spec["model"] = model
-            spec["deployment_id"] = routing["deployment_id"]
-            spec["route"] = routing["route"]
-            spec["price_version_id"] = routing["price_version_id"]
-            spec["config_version"] = routing["config_version"]
-            spec["membership_id"] = user.get("membership_id")
             if ag_ui is not None:
                 # Only the API's validated protocol correlation belongs here;
                 # client state, tools and prompts never enter the frozen spec.
@@ -1132,12 +1426,14 @@ class Platform:
                     "agent_name",
                     "created_at",
                     "status",
+                    "outcome",
                     "error",
                     "finished_at",
                 )
             },
             "model_id": row.get("spec", {}).get("model_id"),
             "model_alias": row.get("spec", {}).get("model", {}).get("alias"),
+            "execution_mode": row.get("spec", {}).get("execution_mode", "single"),
         }
 
     def get_run(self, user: dict, run_id: str) -> dict:
@@ -1158,18 +1454,21 @@ class Platform:
         cursor: str | None = None,
     ) -> list[dict]:
         """Financial facts override a possibly stale worker display projection."""
-        query = select(t.calls).where(t.calls.c.tenant_id == user["tenant_id"])
+        from agent_platform.modules.remote_agents.projections import call_projection
+
+        calls = call_projection()
+        query = select(calls).where(calls.c.tenant_id == user["tenant_id"])
         if "usage.read_all" not in user.get("capabilities", ()):
-            query = query.where(t.calls.c.user_id == user["id"])
+            query = query.where(calls.c.user_id == user["id"])
         if run_id:
-            query = query.where(t.calls.c.run_id == run_id)
+            query = query.where(calls.c.run_id == run_id)
         if cursor:
             stamp, identifier = self.decode_cursor(cursor)
             query = query.where(
-                (t.calls.c.created_at < stamp)
-                | ((t.calls.c.created_at == stamp) & (t.calls.c.id < identifier))
+                (calls.c.created_at < stamp)
+                | ((calls.c.created_at == stamp) & (calls.c.id < identifier))
             )
-        query = query.order_by(t.calls.c.created_at.desc(), t.calls.c.id.desc())
+        query = query.order_by(calls.c.created_at.desc(), calls.c.id.desc())
         if limit:
             query = query.limit(limit)
         with self.db.read() as connection:
@@ -1199,7 +1498,11 @@ class Platform:
                             if receipt["provider_cost"] is not None
                             else None,
                         )
-                    row["usage_source"] = "litellm_gateway"
+                    row["usage_source"] = (
+                        "remote_agent"
+                        if row["call_kind"] == "remote"
+                        else "litellm_gateway"
+                    )
                     row.pop("raw_usage", None)
                     if "platform.costs.read" not in user.get("capabilities", ()):
                         row.pop("provider_cost", None)
@@ -1210,7 +1513,11 @@ class Platform:
             self.require_current(connection, user)
             run = self.owned(connection, t.runs, user, run_id, own=True)
             if run["status"] not in TERMINAL_STATUSES:
-                status = "cancelled" if run["status"] == "queued" else "cancelling"
+                status = (
+                    "cancelled"
+                    if run["status"] == "queued" and not run.get("recovery_count")
+                    else "cancelling"
+                )
                 changes = {"cancel_requested": True, "status": status}
                 if status == "cancelled":
                     changes["finished_at"] = now()
@@ -1243,36 +1550,42 @@ class Platform:
 
     def dashboard(self, user: dict) -> dict:
         """Aggregate in storage, preserving exact money even for local SQLite."""
+        from agent_platform.modules.remote_agents.projections import call_projection
+
+        calls = call_projection()
         receipt = reservations_table
-        joined = t.calls.outerjoin(
+        joined = calls.outerjoin(
             receipt,
-            (receipt.c.tenant_id == t.calls.c.tenant_id)
-            & (receipt.c.call_id == t.calls.c.id),
+            (receipt.c.tenant_id == calls.c.tenant_id)
+            & (receipt.c.call_id == calls.c.id),
         )
-        filters = [t.calls.c.tenant_id == user["tenant_id"]]
+        filters = [calls.c.tenant_id == user["tenant_id"]]
         all_usage = "usage.read_all" in user.get("capabilities", ())
         if not all_usage:
-            filters.append(t.calls.c.user_id == user["id"])
-        cost = func.coalesce(receipt.c.cost, t.calls.c.cost)
+            filters.append(calls.c.user_id == user["id"])
+        cost = func.coalesce(
+            receipt.c.cost,
+            calls.c.cost if self.db.sqlite else cast(calls.c.cost, Numeric(30, 12)),
+        )
         cost_sum = (
             func.exact_sum(cost)
             if self.db.sqlite
             else func.sum(cast(cost, Numeric(30, 12)))
         )
         tokens = func.coalesce(
-            receipt.c.input_tokens, t.calls.c.input_tokens, 0
-        ) + func.coalesce(receipt.c.output_tokens, t.calls.c.output_tokens, 0)
+            receipt.c.input_tokens, calls.c.input_tokens, 0
+        ) + func.coalesce(receipt.c.output_tokens, calls.c.output_tokens, 0)
         confirmed = case(
             (receipt.c.status == "settled", 1),
-            ((receipt.c.id.is_(None)) & (t.calls.c.status == "confirmed"), 1),
+            ((receipt.c.id.is_(None)) & (calls.c.status == "confirmed"), 1),
             else_=0,
         )
         day = (
-            func.strftime("%Y-%m-%d", t.calls.c.created_at, "+8 hours")
+            func.strftime("%Y-%m-%d", calls.c.created_at, "+8 hours")
             if self.db.sqlite
             else func.to_char(
                 func.timezone(
-                    "Asia/Shanghai", cast(t.calls.c.created_at, DateTime(timezone=True))
+                    "Asia/Shanghai", cast(calls.c.created_at, DateTime(timezone=True))
                 ),
                 "YYYY-MM-DD",
             )
@@ -1306,10 +1619,10 @@ class Platform:
             models = [
                 dict(row)
                 for row in connection.execute(
-                    select(t.calls.c.model.label("model"), *columns)
+                    select(calls.c.model.label("model"), *columns)
                     .select_from(joined)
                     .where(*filters)
-                    .group_by(t.calls.c.model)
+                    .group_by(calls.c.model)
                     .order_by(func.count().desc())
                     .limit(100)
                 ).mappings()

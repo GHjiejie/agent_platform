@@ -195,6 +195,16 @@ class Cluster:
             "PLATFORM_RUN_TIMEOUT",
             "PLATFORM_MODEL_TIMEOUT",
             "PLATFORM_MAX_RUN_COST",
+            "PLATFORM_COLLABORATION_ENABLED",
+            "PLATFORM_COLLABORATION_DYNAMIC_ENABLED",
+            "PLATFORM_COLLABORATION_PARALLEL_ENABLED",
+            "PLATFORM_COLLABORATION_DURABLE_ENABLED",
+            "PLATFORM_COLLABORATION_RECOVERY_ENABLED",
+            "PLATFORM_COLLABORATION_DISTRIBUTED_ENABLED",
+            "PLATFORM_REMOTE_AGENTS_ENABLED",
+            "PLATFORM_REMOTE_AGENT_ALLOWED_ORIGINS",
+            "PLATFORM_COLLABORATION_MAX_ACTIVE_MEMBERS",
+            "PLATFORM_COLLABORATION_CAPACITY_WAIT_SECONDS",
             "PLATFORM_MAINTENANCE_INTERVAL",
             "PLATFORM_EXPORT_TTL_SECONDS",
             "PLATFORM_DELETION_RETENTION_DAYS",
@@ -280,7 +290,11 @@ class Cluster:
                     "kind": "ConfigMap",
                     "metadata": {"name": "litellm-config", "namespace": self.namespace},
                     "data": {
-                        "litellm.yaml": (PLATFORM / "deploy/litellm.yaml").read_text()
+                        "litellm.yaml": (PLATFORM / "deploy/litellm.yaml").read_text(),
+                        "platform_native_streaming.py": (
+                            PLATFORM
+                            / "charts/litellm/files/platform_native_streaming.py"
+                        ).read_text(),
                     },
                 }
             ]

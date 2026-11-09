@@ -89,7 +89,10 @@ def session_artifacts(connection, tenant_id: str, session_id: str) -> list[dict]
         {
             "id": f"artifact:{row['run_id']}:{row['data']['id']}",
             "run_id": row["run_id"],
-            "content": activity_content(row["data"]["content"]),
+            "content": {
+                **activity_content(row["data"]["content"]),
+                "validated": row["data"].get("validated", False),
+            },
         }
         for row in rows
     ]

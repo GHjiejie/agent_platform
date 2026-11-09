@@ -1,0 +1,90 @@
+{
+  "date": "2026-11-05",
+  "gateway": "pinned LiteLLM 1.83.0, running local managed gateway",
+  "scope": "Real gateway HTTP/SSE with a deterministic local upstream; no paid provider inference",
+  "hot_loaded_after_startup": true,
+  "upstream_text_chunks": 4,
+  "upstream_chunk_interval_seconds": 0.18,
+  "test_routes_removed": true,
+  "before": {
+    "label": "before",
+    "provider_calls": [
+      {
+        "stream": null,
+        "path": "/v1/responses"
+      }
+    ],
+    "events": [
+      {
+        "kind": "text",
+        "at_ms": 1007.0,
+        "chars": 5
+      },
+      {
+        "kind": "text",
+        "at_ms": 1007.0,
+        "chars": 5
+      },
+      {
+        "kind": "text",
+        "at_ms": 1007.0,
+        "chars": 5
+      },
+      {
+        "kind": "text",
+        "at_ms": 1007.1,
+        "chars": 5
+      },
+      {
+        "kind": "text",
+        "at_ms": 1007.1,
+        "chars": 4
+      },
+      {
+        "kind": "result",
+        "at_ms": 1007.4,
+        "chars": 0
+      }
+    ],
+    "text_span_ms": 0.1,
+    "first_text_before_result_ms": 0.4
+  },
+  "after": {
+    "label": "after",
+    "provider_calls": [
+      {
+        "stream": true,
+        "path": "/v1/responses"
+      }
+    ],
+    "events": [
+      {
+        "kind": "text",
+        "at_ms": 235.3,
+        "chars": 6
+      },
+      {
+        "kind": "text",
+        "at_ms": 420.7,
+        "chars": 6
+      },
+      {
+        "kind": "text",
+        "at_ms": 605.6,
+        "chars": 6
+      },
+      {
+        "kind": "text",
+        "at_ms": 791.9,
+        "chars": 6
+      },
+      {
+        "kind": "result",
+        "at_ms": 997.9,
+        "chars": 0
+      }
+    ],
+    "text_span_ms": 556.6,
+    "first_text_before_result_ms": 762.6
+  }
+}

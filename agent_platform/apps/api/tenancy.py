@@ -637,6 +637,47 @@ def register(app, platform, principal, auth, idempotency):
                 tenant_id, operation_id, actor_id=actor["id"]
             )
 
+    from agent_platform.modules.provider_catalog import ProviderCatalog
+
+    provider_catalog = ProviderCatalog(platform.gateway)
+
+    @app.get("/api/v2/platform/providers", response_model=r.ProviderListResponse)
+    def providers(actor=Depends(principal)):
+        return provider_catalog.list(actor["id"])
+
+    @app.post(
+        "/api/v2/platform/providers", status_code=201, response_model=r.ProviderResponse
+    )
+    def provider_create(body: s.ProviderCreate, actor=Depends(principal)):
+        return provider_catalog.create(actor["id"], **body.model_dump())
+
+    @app.post(
+        "/api/v2/platform/providers/{provider_id}/discover",
+        status_code=202,
+        response_model=r.ProviderOperationResponse,
+    )
+    def provider_discover(provider_id: str, actor=Depends(principal)):
+        return provider_catalog.enqueue(actor["id"], provider_id, "discover")
+
+    @app.post(
+        "/api/v2/platform/providers/{provider_id}/imports",
+        status_code=202,
+        response_model=r.ProviderOperationResponse,
+    )
+    def provider_import(
+        provider_id: str, body: s.ProviderModelImport, actor=Depends(principal)
+    ):
+        return provider_catalog.enqueue(
+            actor["id"], provider_id, "import", body.model_id, body.tools
+        )
+
+    @app.get(
+        "/api/v2/platform/provider-operations/{operation_id}",
+        response_model=r.ProviderOperationResponse,
+    )
+    def provider_operation(operation_id: str, actor=Depends(principal)):
+        return provider_catalog.operation(actor["id"], operation_id)
+
     @app.get("/api/v2/platform/deployments")
     def deployments(actor=Depends(principal)):
         with db.read() as connection:

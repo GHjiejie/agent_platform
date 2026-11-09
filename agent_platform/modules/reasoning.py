@@ -39,6 +39,8 @@ def session_reasoning(
     messages: dict[str, dict] = {}
     for row in connection.execute(query).mappings():
         data = row["data"]
+        if data.get("execution_id"):
+            continue
         call_id = data.get("call_id")
         if not isinstance(call_id, str) or not call_id:
             continue

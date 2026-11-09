@@ -69,6 +69,7 @@ spec:
             failureThreshold: 6
           volumeMounts:
             - {name: config, mountPath: /app/platform-config.yaml, subPath: litellm.yaml, readOnly: true}
+            - {name: config, mountPath: /app/platform_native_streaming.py, subPath: platform_native_streaming.py, readOnly: true}
       volumes:
         - name: config
           configMap:

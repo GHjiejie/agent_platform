@@ -59,7 +59,7 @@
 - 最近会话侧栏、移动端 select；hash 支持 agent/session/tenant；先加载会话，再找到 nonterminal run 重新连 SSE。用户可切换/新建会话时脱离当前流，服务端仍执行；不是自动取消。Playground.tsx:92–138、328–344。
 - 当前 Agent 在已有session、busy或active run时 disabled；模型 busy/active run时 disabled，只列 active 模型；缺模型显示授权链接，但当前输入仍可发送，由后端给 no_available_model。模型优先级：本次手选 > Agent model_id > 组织 default > ordered candidates > 其他已授权模型，运行失败后不自动重放/切模型。platform.py:763–805；PlatformResources.tsx:44–54。
 - 输入 maxLength=32000；Enter发送/Shift+Enter换行，IME组合输入不会提交。textarea busy/loading/无Agent disabled；发送空白/无Agent/loading disabled；active run显示停止按钮，canceling busy。加载会话 spinner；无消息欢迎页+starter prompts；无已发布Agent显示说明；错误条可重新加载；SSE retrying 提供手动重连。Playground.tsx:427–515、522–568、673–745。
-- 对话按纯 React 文本渲染，不是 Markdown renderer；不支持附件/图片/音频/富消息/API工具授权弹窗。Playground.tsx:570–599。
+- 2026-11-05 更新：Agent 回复和可读思考内容支持 Markdown 标题、列表、表格与代码块，用户提问保留纯文本；跳过原始 HTML，图片显示为链接，流式未闭合语法在显示层补齐。无文件上传、音频或 API 工具授权弹窗。实现见 `MessageMarkdown.tsx`，验证见 `tests/markdown.spec.ts`。
 - UI 最多保留80条非message.delta事件（previous.slice(-79)+new）；liveText合并所有模型步骤delta；终态后重新GET SessionDetail，用持久化最终assistant消息替换流内容。失败/取消不保存最终assistant消息，user消息会继续留在历史。Playground.tsx:163–201；worker/main.py:675–707。
 
 ### 运行记录（pages.tsx:1795–1912）

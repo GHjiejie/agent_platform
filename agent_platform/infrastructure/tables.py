@@ -97,6 +97,18 @@ agents = Table(
     Column("max_tokens", Integer, nullable=False),
     Column("tools", JSON, nullable=False),
     Column("execution_policy", JSON, nullable=False, default=dict, server_default="{}"),
+    Column(
+        "execution_mode",
+        String(16),
+        nullable=False,
+        default="single",
+        server_default="single",
+    ),
+    Column("capability_keys", JSON, nullable=False, default=list, server_default="[]"),
+    Column("task_contracts", JSON, nullable=False, default=list, server_default="[]"),
+    Column("collaboration_spec", JSON),
+    Column("remote_ref", JSON),
+    Column("available", Boolean, nullable=False, default=True, server_default="true"),
     Column("published_version", Integer, nullable=False, default=0),
     UniqueConstraint("tenant_id", "id"),
     UniqueConstraint("tenant_id", "builtin_key", name="uq_agent_builtin_tenant"),
@@ -112,6 +124,9 @@ agent_versions = Table(
     Column("tenant_id", String(64), nullable=False),
     Column("spec", JSON, nullable=False),
     Column("created_at", String(40), nullable=False),
+    UniqueConstraint(
+        "tenant_id", "agent_id", "version", name="uq_agent_versions_tenant_version"
+    ),
     ForeignKeyConstraint(
         ["tenant_id", "agent_id"], ["platform_agents.tenant_id", "platform_agents.id"]
     ),
@@ -123,6 +138,15 @@ sessions = Table(
     Column("user_id", String(64), nullable=False),
     Column("agent_id", String(64), nullable=False),
     Column("title", String(160), nullable=False),
+    Column("deleted_at", String(40)),
+    Index(
+        "ix_sessions_visible_history",
+        "tenant_id",
+        "user_id",
+        "deleted_at",
+        "created_at",
+        "id",
+    ),
     UniqueConstraint("tenant_id", "id"),
     ForeignKeyConstraint(
         ["tenant_id", "user_id"],
@@ -140,6 +164,7 @@ runs = Table(
     Column("session_id", String(64), nullable=False, index=True),
     Column("user_id", String(64), nullable=False),
     Column("agent_name", String(120), nullable=False),
+    Column("outcome", String(16)),
     Column("spec", JSON, nullable=False),
     Column("message", Text, nullable=False),
     Column("status", String(24), nullable=False, index=True),
@@ -151,6 +176,7 @@ runs = Table(
     # Nullable only for legacy writers; enqueue freezes this before publication.
     Column("queue_expires_at", Float),
     Column("lease_until", Float),
+    Column("recovery_count", Integer, nullable=False, default=0, server_default="0"),
     Column("deadline", Float),
     Column("fence", Integer, nullable=False, default=0),
     Column("finished_at", String(40)),
@@ -204,6 +230,8 @@ calls = Table(
     Column("run_id", String(64), nullable=False, index=True),
     Column("model_id", String(64), nullable=False),
     Column("model", String(200), nullable=False),
+    Column("task_id", String(64)),
+    Column("execution_id", String(64)),
     Column("agent_name", String(120), nullable=False),
     Column("user_email", String(254), nullable=False),
     Column("status", String(24), nullable=False),
@@ -215,6 +243,20 @@ calls = Table(
     Column("raw_usage", JSON),
     Column("error", Text, nullable=False, default=""),
     Column("finished_at", String(40)),
+    ForeignKeyConstraint(
+        ["tenant_id", "run_id", "task_id"],
+        ["agent_tasks.tenant_id", "agent_tasks.root_run_id", "agent_tasks.id"],
+        name="fk_calls_task",
+    ),
+    ForeignKeyConstraint(
+        ["tenant_id", "run_id", "execution_id"],
+        [
+            "agent_executions.tenant_id",
+            "agent_executions.root_run_id",
+            "agent_executions.id",
+        ],
+        name="fk_calls_execution",
+    ),
     ForeignKeyConstraint(
         ["tenant_id", "run_id"],
         ["platform_runs.tenant_id", "platform_runs.id"],

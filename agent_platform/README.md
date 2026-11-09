@@ -4,6 +4,8 @@ Python / FastAPI、React / TypeScript、LangGraph 与 LiteLLM 组成的多租户
 
 ## 文档
 
+- [服务商模型发现](docs/provider-model-discovery.md)：从服务商接口获取模型，页面选择后动态接入网关，无需逐个修改配置文件。
+
 - [AG-UI 交互协议](docs/ag-ui-protocol.md)：Playground 的流式运行、工具事件、取消、幂等与断线恢复。
 - [可视化界面助手](docs/generative-ui-agent.md)：内置 Agent、HTML/CSS/JS 工具、隔离交互界面、历史恢复与继续修改。
 - [Agent 执行策略](docs/agent-execution-policy.md)：开发者配置思考强度、调用和 Token/费用预算、运行时限及输出上限后的有限恢复。
@@ -98,7 +100,7 @@ make -C agent_platform local-start PORT=8010 GATEWAY=external
 5. 平台财务显式入账；组织按需配置更严格的内部配额。
 6. 切换进入该组织，在 Playground 运行 Agent。
 
-内置目录只包含 `normal` 通用聊天助手和可调用 `generate_sandboxed_ui` 工具的可视化界面助手。Playground 首次进入及点击“新建对话”默认选择 `normal`，显式选择助手和打开历史会话时沿用所选助手。
+内置目录只包含 `normal` 通用聊天助手和可调用 `generate_sandboxed_ui` 工具的可视化界面助手。Playground 首次进入及点击“新建对话”默认选择 `normal`，显式选择助手和打开历史会话时沿用所选助手。团队配置或执行历史引用的旧内置助手会保留为普通 Agent，成员版本及原有引用继续有效。
 
 初始化会复用已有的 `normal` 配置，并移除旧版的八个角色模板。旧助手关联的会话转接至 `normal`，历史消息、运行快照和费用记录保留；若旧助手还有未结束的运行，初始化会拒绝清理，需待运行结束后重试。
 

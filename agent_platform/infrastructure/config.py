@@ -1,5 +1,6 @@
 """Explicit platform configuration, separate from existing demos."""
 
+import json
 import math
 import os
 from dataclasses import dataclass
@@ -19,6 +20,16 @@ class Settings:
     gateway_control_key: str = ""
     gateway_sync_interval: float = 2.0
     worker_concurrency: int = 4
+    collaboration_enabled: bool = False
+    collaboration_dynamic_enabled: bool = False
+    collaboration_parallel_enabled: bool = False
+    remote_agents_enabled: bool = False
+    remote_agent_allowed_origins: tuple[str, ...] = ()
+    collaboration_distributed_enabled: bool = False
+    collaboration_durable_enabled: bool = False
+    collaboration_recovery_enabled: bool = False
+    collaboration_max_active_members: int = 8
+    collaboration_capacity_wait_seconds: float = 30.0
     maintenance_interval: float = 30.0
     export_ttl_seconds: int = 86400
     maintenance_batch_size: int = 100
@@ -52,6 +63,20 @@ class Settings:
     web_directory: Path = Path(__file__).resolve().parents[1] / "apps/web/dist"
 
     def __post_init__(self) -> None:
+        from agent_platform.modules.remote_agents.transport import Endpoint
+
+        if not isinstance(self.remote_agent_allowed_origins, (tuple, list)):
+            raise TypeError("Remote Agent origins must be a JSON array")
+        object.__setattr__(
+            self,
+            "remote_agent_allowed_origins",
+            tuple(self.remote_agent_allowed_origins),
+        )
+        for origin in self.remote_agent_allowed_origins:
+            if Endpoint.parse(origin).path:
+                raise ValueError(
+                    "Remote Agent allowlist entries must be origins without paths"
+                )
         if self.service_role not in {
             "api",
             "worker",
@@ -64,6 +89,12 @@ class Settings:
             raise ValueError("PLATFORM_MODE must be local or saas")
         if self.worker_concurrency < 1:
             raise ValueError("PLATFORM_WORKER_CONCURRENCY must be positive")
+        if self.collaboration_max_active_members < 1:
+            raise ValueError(
+                "PLATFORM_COLLABORATION_MAX_ACTIVE_MEMBERS must be positive"
+            )
+        if not 0 < self.collaboration_capacity_wait_seconds <= 300:
+            raise ValueError("Collaboration capacity wait must be in (0, 300] seconds")
         if (
             not 1
             <= self.default_output_tokens
@@ -153,7 +184,44 @@ class Settings:
             gateway_sync_interval=float(
                 os.getenv("PLATFORM_GATEWAY_SYNC_INTERVAL", "2")
             ),
+            collaboration_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_ENABLED", "false"
+            ).lower()
+            == "true",
+            collaboration_dynamic_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_DYNAMIC_ENABLED", "false"
+            ).lower()
+            == "true",
             worker_concurrency=int(os.getenv("PLATFORM_WORKER_CONCURRENCY", "4")),
+            collaboration_recovery_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_RECOVERY_ENABLED", "false"
+            ).lower()
+            == "true",
+            remote_agents_enabled=os.getenv(
+                "PLATFORM_REMOTE_AGENTS_ENABLED", "false"
+            ).lower()
+            == "true",
+            remote_agent_allowed_origins=json.loads(
+                os.getenv("PLATFORM_REMOTE_AGENT_ALLOWED_ORIGINS", "[]")
+            ),
+            collaboration_distributed_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_DISTRIBUTED_ENABLED", "false"
+            ).lower()
+            == "true",
+            collaboration_durable_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_DURABLE_ENABLED", "false"
+            ).lower()
+            == "true",
+            collaboration_parallel_enabled=os.getenv(
+                "PLATFORM_COLLABORATION_PARALLEL_ENABLED", "false"
+            ).lower()
+            == "true",
+            collaboration_max_active_members=int(
+                os.getenv("PLATFORM_COLLABORATION_MAX_ACTIVE_MEMBERS", "8")
+            ),
+            collaboration_capacity_wait_seconds=float(
+                os.getenv("PLATFORM_COLLABORATION_CAPACITY_WAIT_SECONDS", "30")
+            ),
             maintenance_interval=float(
                 os.getenv("PLATFORM_MAINTENANCE_INTERVAL", "30")
             ),
