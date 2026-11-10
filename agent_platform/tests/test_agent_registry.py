@@ -244,7 +244,15 @@ class AgentRegistryTests(unittest.TestCase):
         session = self.request(
             "POST", "/sessions", json={"agent_id": team["id"]}
         ).json()
-        self.assertEqual(self.enqueue(session).status_code, 409)
+        rejected = self.enqueue(session)
+        self.assertEqual(rejected.status_code, 409)
+        self.assertIn("平台尚未开放团队协作", rejected.json()["error"]["message"])
+        self.platform.settings = replace(self.settings, collaboration_enabled=True)
+        rejected = self.enqueue(session)
+        self.assertEqual(rejected.status_code, 409)
+        self.assertEqual(rejected.json()["error"]["code"], "collaboration_disabled")
+        self.assertIn("当前组织尚未开启团队协作", rejected.json()["error"]["message"])
+        self.platform.settings = self.settings
         setting = self.request("GET", "/agents/collaboration-settings").json()
         response = self.request(
             "PATCH",

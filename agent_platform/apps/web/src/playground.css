@@ -99,8 +99,11 @@
 .pg-notice > svg { margin-top: 3px; }
 .pg-notice > span { flex: 1; }
 .pg-notice.error { color: #b16c80; background: #fcf3f6; border: 1px solid #f4e2e8; }
-.pg-notice.reconnect { color: #968260; background: #fbf8f1; }
+.pg-notice.reconnect, .pg-notice.collaboration { color: #968260; background: #fbf8f1; }
 .pg-notice button { margin-left: auto; padding: 1px 0; border: 0; background: transparent; font-size: 11px; color: inherit; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.pg-collaboration-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; }
+.pg-collaboration-actions button { margin-left: 0; }
+.pg-collaboration-actions button:disabled { cursor: wait; opacity: .6; }
 .pg-jump-latest { position: absolute; bottom: 185px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; min-height: 34px; border: 1px solid #e4dfed; background: #fff; border-radius: 20px; padding: 8px 13px; color: #82728e; font-size: 11px; box-shadow: 0 3px 12px #30233d10; }
 .pg-loading { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 36px 12px; color: #9c92aa; font-size: 12px; }
 .pg-history-body, .pg-run-details { padding: 8px 24px 24px; }

@@ -5,7 +5,7 @@ import {
   Copy, History, LoaderCircle, MessageSquare, Plus,
   Sparkles, Terminal, Wrench,
 } from "lucide-react";
-import { api, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
+import { api, ApiError, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
 import { Button, Modal, Select, useResource, useToast } from "./components";
 import type { Agent, GeneratedArtifact, Model, ReasoningEffort, ReasoningTrace, Run, Session, SessionDetail } from "./types";
 import type { AGUIEvent } from "./ag-ui";
@@ -17,6 +17,8 @@ import { CollaborationPanel } from "./CollaborationPanel";
 import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
 import { SessionHistory } from "./SessionHistory";
+import { TeamSetup } from "./TeamSetup";
+import type { CollaborationSettingsResponse } from "./api-contract.generated";
 
 const query = () => new URLSearchParams(location.hash.split("?")[1] ?? "");
 const reasoningOptions: { value: ReasoningEffort; label: string }[] = [
@@ -28,7 +30,7 @@ const reasoningOptions: { value: ReasoningEffort; label: string }[] = [
   { value: "xhigh", label: "很高" },
   { value: "max", label: "最高" },
 ];
-export function Playground({ name }: { name?: string }) {
+export function Playground({ name, canManageAgents = false }: { name?: string; canManageAgents?: boolean }) {
   const tenantScope = useRef(getTenantId()).current;
   const scopeRevision = useRef(getScopeRevision()).current;
   const agents = useResource<{ items: Agent[] }>("/agents");
@@ -53,6 +55,7 @@ export function Playground({ name }: { name?: string }) {
   const { viewport, content: messageContent, showLatest, followLatest } = useChatScroll(sessionId);
   const input = useRef<HTMLTextAreaElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [teamSetupOpen, setTeamSetupOpen] = useState(false);
   const sendKey = useRef<{
     message: string;
     session: string;
@@ -71,6 +74,17 @@ export function Playground({ name }: { name?: string }) {
   const selectedAgent = agents.data?.items.find(
     (agent) => agent.id === (detail?.agent_id ?? agentId),
   );
+  const isTeam = selectedAgent?.execution_mode === "team";
+  const collaboration = useResource<CollaborationSettingsResponse>("/agents/collaboration-settings", isTeam);
+  const collaborationNotice = !isTeam ? ""
+    : collaboration.loading || !collaboration.data && !collaboration.error ? "正在检查团队协作设置…"
+    : collaboration.error ? `无法检查团队协作设置：${collaboration.error}`
+    : !collaboration.data?.platform_enabled ? "平台尚未开放团队协作，请联系平台管理员。"
+    : !collaboration.data.enabled ? canManageAgents
+      ? "当前组织尚未开启团队协作，请打开团队协作设置并开启组织协作。"
+      : "当前组织尚未开启团队协作，请联系组织管理员开启。"
+    : "";
+  const teamRunBlocked = Boolean(collaborationNotice);
   const latestRun = detail?.runs
     .slice()
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
@@ -164,7 +178,7 @@ export function Playground({ name }: { name?: string }) {
   async function send(event: FormEvent) {
     event.preventDefault();
     const message = draft.trim();
-    if (!scopeIsCurrent(scopeRevision) || !message || activeRun || busy || loading || !agentId) return;
+    if (!scopeIsCurrent(scopeRevision) || !message || activeRun || busy || loading || agents.loading || !selectedAgent || !agentId || teamRunBlocked) return;
     setBusy(true);
     followLatest();
     setError("");
@@ -212,6 +226,7 @@ export function Playground({ name }: { name?: string }) {
       sendKey.current = null;
       setShowEvents(false);
     } catch (err) {
+      if (err instanceof ApiError && err.code === "collaboration_disabled") void collaboration.reload();
       if (scopeIsCurrent(scopeRevision)) setError((err as Error).message);
     } finally {
       setBusy(false);
@@ -325,7 +340,15 @@ export function Playground({ name }: { name?: string }) {
       }}><ArrowDown size={17} />最新消息</button>}
       <div className="pg-compose-area">
         {effectiveError && <div className="pg-notice error" role="alert"><AlertCircle size={17} /><span>{effectiveError}</span>
-          <button onClick={() => { if (sessionId) void loadSession(sessionId); void agents.reload(); void models.reload(); }}>重新加载</button>
+          <button onClick={() => { if (sessionId) void loadSession(sessionId); void agents.reload(); void models.reload(); if (isTeam) void collaboration.reload(); }}>重新加载</button>
+        </div>}
+        {collaborationNotice && !activeRun && <div className="pg-notice collaboration" role={collaboration.loading ? "status" : "alert"}>
+          <AlertCircle size={17} /><span id="team-collaboration-notice">{collaborationNotice}</span>
+          <div className="pg-collaboration-actions">
+            {canManageAgents && collaboration.data?.platform_enabled && !collaboration.data.enabled &&
+              <button type="button" onClick={() => setTeamSetupOpen(true)}>团队协作设置</button>}
+            <button type="button" disabled={collaboration.loading} onClick={() => void collaboration.reload()}>重新检查</button>
+          </div>
         </div>}
         {connection === "retrying" && <div className="pg-notice reconnect" role="status"><LoaderCircle size={16} className="spin" />
           <span>正在恢复连接，Agent 仍在运行。</span><button onClick={() => reconnect()}>立即重连</button>
@@ -360,7 +383,8 @@ export function Playground({ name }: { name?: string }) {
             <span className="pg-keyboard-hint">Enter 发送</span>
             {activeRun ? <Button type="button" variant="secondary" className="pg-stop" onClick={() => void cancel()} busy={canceling}
               title="停止生成不会免除已产生的费用"><CircleStop size={17} /><span>停止生成</span></Button>
-              : <Button type="submit" className="pg-send" aria-label="发送消息" disabled={!draft.trim() || !agentId || loading} busy={busy}>
+              : <Button type="submit" className="pg-send" aria-label="发送消息" aria-describedby={teamRunBlocked ? "team-collaboration-notice" : undefined}
+                disabled={!draft.trim() || !agentId || !selectedAgent || agents.loading || loading || teamRunBlocked} busy={busy}>
                 {!busy && <ArrowUp size={21} />}
               </Button>}
           </div>
@@ -374,6 +398,7 @@ export function Playground({ name }: { name?: string }) {
         <p className="pg-disclaimer">AI 的回答可能不准确，请核实关键信息。</p>
       </div>
     </div>
+    {teamSetupOpen && <TeamSetup close={() => setTeamSetupOpen(false)} saved={async () => { await collaboration.reload(); }} />}
     {historyOpen && <SessionHistory sessions={sessions.data?.items} loading={sessions.loading} error={sessions.error} reload={sessions.reload}
       currentSessionId={sessionId} agents={agents.data?.items} tenant={tenantScope} busy={busy} choose={chooseSession}
       deleted={(ids, options) => {

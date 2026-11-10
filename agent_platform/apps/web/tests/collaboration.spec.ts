@@ -14,10 +14,10 @@ const task = { id: "task1", logical_key: "normalize", member_key: "m", agent_id:
 const execution = { id: "exec1", task_id: "task1", attempt: 1, role: "member", agent_id: "member", agent_version: 1, name: "整理成员", model_alias: "offline-model", status: "succeeded", output: { facts: ["已提供数据"] }, error: "", input_digest: "input-proof", input_summary: "只接收已分配的数据", created_at: created, finished_at: created, fees };
 const detail = { run_id: run.id, status: "succeeded", enabled: true, outcome: "partial", tasks: [task], executions: [execution, { ...execution, id: "summary", task_id: null, role: "summary", name: "研究团队", output: "统一答案" }], artifacts: [{ id: "artifact1", execution_id: "exec1", version: 1, kind: "task_result", content: execution.output, digest: "source-proof", validation_status: "validated" }], fees, max_cost: "1" };
 
-async function teamFixture(page: Page, failedChart = false, advancedModes = false) {
+async function teamFixture(page: Page, failedChart = false, advancedModes = false, availability: { enabled?: boolean; platform_enabled?: boolean } = {}) {
   const mock = await fixture(page);
   let completed = failedChart;
-  let settings = { enabled: false, version: 1, platform_enabled: true, features: { dynamic: advancedModes, parallel: advancedModes, durable: advancedModes, recovery: advancedModes } };
+  let settings = { enabled: true, version: 1, platform_enabled: true, features: { dynamic: advancedModes, parallel: advancedModes, durable: advancedModes, recovery: advancedModes }, ...availability };
   const ui = { validated: true, generating: false, htmlComplete: true, cssComplete: true, jsFunctionsComplete: true, jsExpressionsComplete: true, initialHeight: 180, placeholderMessages: [], html: ['<button id="add">增加</button><output id="count">0</output>'], css: "body{padding:16px}", jsFunctions: "", jsExpressions: ["let n=0;document.querySelector('#add').addEventListener('click',()=>{document.querySelector('#count').textContent=String(++n)})"] };
   await page.route("**/api/**", async (route) => {
     const request = route.request(), path = new URL(request.url()).pathname, method = request.method();
@@ -57,7 +57,7 @@ async function teamFixture(page: Page, failedChart = false, advancedModes = fals
 }
 
 test("发现成员、配置团队、保存发布与安装模板", async ({ page }) => {
-  const mock = await teamFixture(page);
+  const mock = await teamFixture(page, false, false, { enabled: false });
   await page.goto("/#agents?tenant=team-a");
   await page.getByRole("button", { name: "编辑", exact: true }).click();
   await page.getByRole("button", { name: "添加任务", exact: true }).click();
@@ -70,13 +70,68 @@ test("发现成员、配置团队、保存发布与安装模板", async ({ page 
   expect(saved?.body.execution_mode).toBe("team");
   expect(saved?.body.collaboration_spec).toMatchObject({ members: expect.arrayContaining([{ key: expect.any(String), agent_id: "member", version: 1, responsibility: "分析资料" }]) });
   await page.getByRole("button", { name: "发布新版", exact: true }).click();
-  await expect(page.getByRole("status")).toContainText("已发布");
+  await expect(page.getByRole("status").filter({ hasText: "已发布" })).toBeVisible();
   await page.getByRole("button", { name: "团队协作设置", exact: true }).click();
   await page.getByRole("button", { name: "开启组织协作", exact: true }).click();
   await expect(page.getByText("组织协作设置已更新。", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "安装顺序模板", exact: true }).click();
   await expect(page.getByText("顺序模板已安装并发布，可以在 Agent 列表中编辑或运行。", { exact: true })).toBeVisible();
   expect(mock.errors).toEqual([]);
+});
+
+test("组织协作关闭时阻止发送，开启后保留草稿并可直接运行", async ({ page }) => {
+  const mock = await teamFixture(page, false, false, { enabled: false });
+  let submitted = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && /\/(sessions|ag-ui)$/.test(new URL(request.url()).pathname)) submitted++;
+  });
+  await page.goto("/#playground?tenant=team-a&agent=team");
+  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+  await input.fill("分析这些数据");
+  await expect(page.getByRole("alert")).toContainText("当前组织尚未开启团队协作");
+  await expect(page.getByRole("button", { name: "发送消息", exact: true })).toBeDisabled();
+  await input.press("Enter");
+  expect(submitted).toBe(0);
+  await page.getByRole("button", { name: "团队协作设置", exact: true }).click();
+  await page.getByRole("button", { name: "开启组织协作", exact: true }).click();
+  await expect(page.getByText("组织协作设置已更新。", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(input).toHaveValue("分析这些数据");
+  await expect(page.getByRole("button", { name: "发送消息", exact: true })).toBeEnabled();
+  await page.getByRole("button", { name: "发送消息", exact: true }).click();
+  await expect(page.locator(".pg-message-text").filter({ hasText: "统一答案" })).toHaveCount(1);
+  expect(mock.errors).toEqual([]);
+});
+
+test("平台协作关闭时提示联系平台管理员并阻止发送", async ({ page }, info) => {
+  await teamFixture(page, false, false, { platform_enabled: false });
+  await page.goto("/#playground?tenant=team-a&agent=team");
+  await page.getByRole("textbox", { name: "发送给 Agent 的消息" }).fill("分析这些数据");
+  await expect(page.getByRole("alert")).toContainText("平台尚未开放团队协作，请联系平台管理员");
+  await expect(page.getByRole("button", { name: "发送消息", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "团队协作设置", exact: true })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath("team-disabled-desktop.png"), fullPage: true, animations: "disabled" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole("alert")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("team-disabled-mobile.png"), fullPage: true, animations: "disabled" });
+});
+
+test("团队设置读取失败时保留草稿，重试成功后恢复发送", async ({ page }) => {
+  await teamFixture(page);
+  let unavailable = true;
+  await page.route("**/agents/collaboration-settings", (route) => unavailable
+    ? route.fulfill({ status: 503, json: { error: { code: "unavailable", message: "服务暂不可用" } } })
+    : route.fallback());
+  await page.goto("/#playground?tenant=team-a&agent=team");
+  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
+  await input.fill("保留这份分析请求");
+  await expect(page.getByRole("alert")).toContainText("无法检查团队协作设置");
+  await expect(page.getByRole("button", { name: "发送消息", exact: true })).toBeDisabled();
+  unavailable = false;
+  await page.getByRole("button", { name: "重新检查", exact: true }).click();
+  await expect(page.getByRole("button", { name: "发送消息", exact: true })).toBeEnabled();
+  await expect(input).toHaveValue("保留这份分析请求");
 });
 
 test("配置动态规划和双任务并行并保留固定成员版本", async ({ page }, testInfo) => {

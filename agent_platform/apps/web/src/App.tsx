@@ -255,7 +255,7 @@ function Workspace() {
         {!isGlobal && (contextLoading ? <Loading /> : contextError ? <ErrorState message={contextError} retry={() => setContextReload((value) => value + 1)} /> : !user || user.tenant_id !== selected ? <Empty title="选择一个组织" description="加入组织后即可使用组织授权的 Agent 和模型。" /> : tenant && !["active", "suspended", "closing"].includes(tenant.status) ? <Empty title="该组织当前不可用" description="组织已暂停或正在开通，请联系平台运营人员，或切换到其他组织。" /> : <>
           {safeRoute === "overview" && <DashboardPage user={user} navigate={navigate} />}
           {safeRoute === "agents" && <AgentsPage admin={canManageAgents} navigate={navigate} />}
-          {safeRoute === "playground" && <Playground name={identityName} />}
+          {safeRoute === "playground" && <Playground name={identityName} canManageAgents={canManageAgents} />}
           {safeRoute === "runs" && <RunsPage navigate={navigate} />}
           {safeRoute === "models" && <ModelsPage admin={false} canDiscover={platformCapabilities.includes("platform.models.manage")} canPrice={platformCapabilities.includes("platform.pricing.manage")} canPolicy={!readOnlyTenant && (user.capabilities?.includes("models.policy") ?? false)} />}
           {safeRoute === "users" && <MembersPage user={user} changed={refreshIdentity} />}

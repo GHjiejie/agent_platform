@@ -1297,9 +1297,17 @@ class Platform:
                         nt.tenant_settings.c.tenant_id == user["tenant_id"]
                     )
                 )
-                if not self.settings.collaboration_enabled or not enabled:
+                if not self.settings.collaboration_enabled:
                     raise PlatformError(
-                        409, "collaboration_disabled", "团队执行尚未开放。"
+                        409,
+                        "collaboration_disabled",
+                        "平台尚未开放团队协作，请联系平台管理员。",
+                    )
+                if not enabled:
+                    raise PlatformError(
+                        409,
+                        "collaboration_disabled",
+                        "当前组织尚未开启团队协作，请在“我的 Agent → 团队协作设置”中开启。",
                     )
             spec["snapshot_schema_version"] = 2
             spec = self.freeze_execution_spec(

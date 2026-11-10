@@ -454,6 +454,7 @@ class CollaborationRuntimeTests(unittest.TestCase):
         from agent_platform.tests.test_ag_ui import frames
 
         self.create_resources()
+        self.platform.settings = replace(self.settings, default_output_tokens=8192)
         with self.db.transaction(f"tenant:{self.tenant}") as connection:
             count = connection.scalar(
                 select(func.count())
@@ -490,6 +491,15 @@ class CollaborationRuntimeTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         team = response.json()
         self.assertTrue(team["created"])
+        installed = self.request("GET", "/agents").json()["items"]
+        root = next(agent for agent in installed if agent["id"] == team["id"])
+        template_ids = {team["id"]} | {
+            member["agent_id"] for member in root["collaboration_spec"]["members"]
+        }
+        self.assertEqual(
+            [agent["max_tokens"] for agent in installed if agent["id"] in template_ids],
+            [8192] * 4,
+        )
         self.assertEqual(
             self.request("POST", "/agents/templates/analysis-team").json(),
             {"id": team["id"], "created": False},

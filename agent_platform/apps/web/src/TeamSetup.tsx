@@ -23,7 +23,7 @@ export function TeamSetup({ close, saved }: { close: () => void; saved: () => Pr
         <Button variant="secondary" disabled={busy} onClick={() => void perform(async () => {
           if (!settings.data) return;
           await write("/agents/collaboration-settings", { enabled: !settings.data.enabled, expected_version: settings.data.version }, "PATCH");
-          await settings.reload(); setMessage("组织协作设置已更新。");
+          await settings.reload(); await saved(); setMessage("组织协作设置已更新。");
         })}>{settings.data.enabled ? "关闭组织协作" : "开启组织协作"}</Button>
       </>}
       <hr />

@@ -52,7 +52,7 @@ def install(platform, user):
             "model_id": None,
             "temperature": 1,
             "max_steps": 4,
-            "max_tokens": 2048,
+            "max_tokens": platform.settings.default_output_tokens,
             "tools": [],
             "execution_policy": {},
         }
