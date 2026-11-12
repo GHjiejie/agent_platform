@@ -13,7 +13,7 @@ test("输入框思考强度：请求覆盖、运行中禁用和窄屏键盘操�
   const root = `/api/v2/tenants/${tenant}`;
   await page.goto(`/#playground?tenant=${tenant}`);
   await page.getByRole("combobox", { name: "当前 Agent", exact: true }).click();
-  await page.getByRole("option", { name: /AG-UI 联调助手/ }).click();
+  await page.getByRole("option", { name: /^normal/ }).click();
   const reasoning = page.getByRole("combobox", { name: "本次思考强度", exact: true });
   await expect(reasoning).toContainText("思考：自动");
   await reasoning.click();
@@ -60,7 +60,7 @@ test("真实前后端 AG-UI：工具调用、刷新恢复、取消和费用凭�
   await page.goto(`/#playground?tenant=${tenant}`);
   const agent = page.getByRole("combobox", { name: "当前 Agent", exact: true });
   await agent.click();
-  await page.getByRole("option", { name: /AG-UI 联调助手/ }).click();
+  await page.getByRole("option", { name: /^normal/ }).click();
   const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
   await input.fill("请计算 2+3");
   await input.press("Enter");
@@ -106,55 +106,6 @@ test("真实前后端 AG-UI：工具调用、刷新恢复、取消和费用凭�
   await context.request.post("/api/v1/auth/logout", { headers: { "X-CSRF-Token": auth.csrf_token } });
 });
 
-test("内置可视化 Agent：交互、刷新、连续修改与窄屏", async ({ page, context }, info) => {
-  const login = await context.request.post("/api/v1/auth/login", { data: { email: "ag-ui-browser@example.test", password: "temporary-platform-fixture-password" } });
-  expect(login.status()).toBe(200);
-  const auth = await login.json();
-  const tenant = auth.user.memberships.find((item: { role: string }) => item.role === "owner").tenant_id as string;
-  await page.goto(`/#playground?tenant=${tenant}`);
-  await page.getByRole("combobox", { name: "当前 Agent", exact: true }).click();
-  await page.getByRole("option", { name: /可视化界面助手/ }).click();
-  const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
-  await input.fill("生成计数器界面");
-  await input.press("Enter");
-  const frames = page.locator('iframe[aria-label="生成的交互界面"]');
-  await expect(frames).toHaveCount(1);
-  const frame = page.frameLocator('iframe[aria-label="生成的交互界面"]').first();
-  await frame.getByRole("button", { name: "增加" }).click();
-  await expect(frame.locator("output")).toHaveText("1");
-  expect(await frames.first().getAttribute("sandbox")).toBe("allow-scripts");
-  await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
-  await page.reload();
-  await expect(frames).toHaveCount(1);
-  await frame.getByRole("button", { name: "增加" }).click();
-  await expect(frame.locator("output")).toHaveText("1");
-  await input.fill("修改计数器界面");
-  await input.press("Enter");
-  await expect(frames).toHaveCount(2);
-  await expect(page.getByRole("button", { name: "停止生成" })).toHaveCount(0);
-  await page.setViewportSize({ width: 390, height: 844 });
-  await expect.poll(() => page.locator("#workspace-sidebar").evaluate((element) => element.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
-  await page.frameLocator('iframe[aria-label="生成的交互界面"]').last().getByRole("button", { name: "增加" }).click();
-  await expect(page.frameLocator('iframe[aria-label="生成的交互界面"]').last().locator("output")).toHaveText("1");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await page.screenshot({ path: info.outputPath("generative-ui-mobile.png"), fullPage: true });
-  await page.setViewportSize({ width: 1440, height: 1000 });
-  await expect.poll(() => page.locator("#workspace-sidebar").evaluate((element) => element.getBoundingClientRect().left)).toBe(0);
-  await page.screenshot({ path: info.outputPath("generative-ui-desktop.png"), fullPage: true });
-  // Corrupt only this browser's read response, retaining the persisted version.
-  await page.route("**/api/v2/tenants/*/sessions/*", async (route) => {
-    if (route.request().method() !== "GET" || route.request().url().endsWith("/ag-ui")) return route.continue();
-    const response = await route.fetch();
-    const detail = await response.json();
-    if (detail.artifacts?.length) detail.artifacts[detail.artifacts.length - 1].content.jsFunctions = 'throw new Error("初始化示例错误 <img src=x>")';
-    await route.fulfill({ response, json: detail });
-  });
-  await page.reload();
-  await expect(page.getByRole("alert").filter({ hasText: "生成的界面脚本执行失败" })).toBeVisible();
-  await page.getByText("查看错误详情").click();
-  await expect(page.getByText("初始化示例错误 <img src=x>", { exact: true })).toBeVisible();
-  await expect(page.locator('iframe[aria-label="生成界面预览"]')).toHaveCount(1);
-});
 
 test("推理内容：实时展开、完成折叠、刷新恢复和思考中取消", async ({ page, context }, info) => {
   const errors: string[] = [];
@@ -166,7 +117,7 @@ test("推理内容：实时展开、完成折叠、刷新恢复和思考中取�
   const root = `/api/v2/tenants/${tenant}`;
   await page.goto(`/#playground?tenant=${tenant}`);
   await page.getByRole("combobox", { name: "当前 Agent", exact: true }).click();
-  await page.getByRole("option", { name: /AG-UI 联调助手/ }).click();
+  await page.getByRole("option", { name: /^normal/ }).click();
   const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
   await input.fill("展示思考");
   await input.press("Enter");

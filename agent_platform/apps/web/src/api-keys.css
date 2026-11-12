@@ -1,0 +1,9 @@
+.api-key-table { margin-bottom: 24px; overflow-x: auto; }
+.api-key-prefix { display: block; margin-top: 5px; color: var(--muted); }
+.api-key-guide { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+.api-key-guide label { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; overflow-wrap: anywhere; }
+.api-key-example { white-space: pre; overflow-x: auto; max-width: 100%; padding: 16px; border-radius: 12px; background: #f7f7fb; font-size: 12px; line-height: 1.7; margin: 16px 0; }
+.api-key-secret { white-space: pre-wrap; overflow-wrap: anywhere; user-select: all; padding: 16px; border: 1px solid var(--border); border-radius: 12px; line-height: 1.7; }
+.api-key-models { display: grid; gap: 12px; max-height: 260px; overflow-y: auto; }
+.api-key-models label { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; overflow-wrap: anywhere; }
+.api-key-models small { color: var(--muted); }

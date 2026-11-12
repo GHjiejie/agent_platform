@@ -47,6 +47,7 @@ export function useAgentRun(tenant: string, callbacks: {
     setTarget(null); setRun(null); setEvents([]); setConnection("closed"); setError("");
   }, []);
   const attach = useCallback((active: Run) => {
+    if (!active.session_id) return;
     const next = ++generation.current;
     lastCursor.current = "0.-1";
     currentRunId.current = active.id;

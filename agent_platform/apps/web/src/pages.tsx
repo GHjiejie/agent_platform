@@ -1,7 +1,4 @@
 import { ProviderCatalog } from "./ProviderCatalog";
-import { TeamSetup } from "./TeamSetup";
-import { TeamEditor, memberContracts } from "./TeamEditor";
-import type { TaskContract, TeamSpec } from "./api-contract.generated";
 import { Select } from "./Select";
 import { useState } from "react";
 import {
@@ -326,7 +323,6 @@ export function AgentsPage({
   const [editing, setEditing] = useState<Agent | "new" | null>(null);
   const [publishing, setPublishing] = useState<string | null>(null);
   const toast = useToast();
-  const [teamSetup, setTeamSetup] = useState(false);
   const items =
     agents.data?.items.filter((agent) =>
       (source === "all" ||
@@ -354,12 +350,12 @@ export function AgentsPage({
       <PageTitle
         eyebrow="AGENTS"
         title="我的 Agent"
-        description="内置实用助手，选择任务即可开始。模型可随时切换，角色与工作方式保持独立。"
+        description="使用 normal 开始通用对话，可随时切换模型和调整系统指令。"
         action={
           admin && (
-            <div className="team-dependencies"><Button variant="secondary" onClick={() => setTeamSetup(true)}>团队协作设置</Button><Button onClick={() => setEditing("new")}>
+            <Button onClick={() => setEditing("new")}>
               <Plus size={17} />创建 Agent
-            </Button></div>
+            </Button>
           )
         }
       />
@@ -414,7 +410,6 @@ export function AgentsPage({
                   <span className="agent-origin">内置 · {agent.category}</span>
                 )}
                 <p>{agent.description || "还没有填写 Agent 描述。"}</p>
-                {agent.execution_mode === "team" && <span className="agent-origin">团队协作 · {agent.collaboration_spec?.tasks?.length ?? 0} 个任务</span>}
                 <div className="agent-model">
                   <Boxes size={14} />
                   {!agent.model_id
@@ -480,7 +475,6 @@ export function AgentsPage({
           </Panel>
         )}
       </ResourceState>
-      {teamSetup && <TeamSetup close={() => setTeamSetup(false)} saved={agents.reload} />}
       {editing && (
         <AgentEditor
           agent={editing === "new" ? null : editing}
@@ -513,9 +507,6 @@ function AgentEditor({
   const [selectedModel, setSelectedModel] = useState<string>(
     agent?.model_id ?? "",
   );
-  const [mode, setMode] = useState<"single" | "team">(agent?.execution_mode ?? "single");
-  const [team, setTeam] = useState<TeamSpec>(agent?.collaboration_spec ?? { members: [], tasks: [], planning: "template", max_parallel: 1 });
-  const [contracts, setContracts] = useState(JSON.stringify(agent?.task_contracts ?? [], null, 2));
   const policy = agent?.execution_policy;
   const modelLimit = models.find((model) => model.id === selectedModel)?.max_output_tokens;
   return (
@@ -529,15 +520,7 @@ function AgentEditor({
         label="保存草稿"
         submit={async (form) => {
           const data = new FormData(form);
-          let taskContracts: TaskContract[];
-          try { taskContracts = JSON.parse(contracts); if (!Array.isArray(taskContracts)) throw new Error(); }
-          catch { throw new Error("任务接口必须是有效的 JSON 数组；服务端会进一步校验接口内容。"); }
-          if (mode === "team" && (!team.tasks?.length || team.tasks.some((task) => !task.task_type || !team.members.some((member) => member.key === task.member_key)))) throw new Error("请为每个任务选择已发布的成员和任务类型。");
           const payload = {
-            execution_mode: mode,
-            collaboration_spec: mode === "team" ? team : null,
-            task_contracts: mode === "single" ? taskContracts : [],
-            capability_keys: formValue(form, "capability_keys").split(",").map((value) => value.trim()).filter(Boolean),
             name: formValue(form, "name"),
             description: formValue(form, "description"),
             system_prompt: formValue(form, "system_prompt"),
@@ -595,14 +578,6 @@ function AgentEditor({
             </Select>
           </Field>
         </div>
-        <Field label="执行方式"><Select value={mode} onChange={(event) => setMode(event.target.value === "team" ? "team" : "single")}>
-          <option value="single">单 Agent</option><option value="team">团队协作</option>
-        </Select></Field>
-        {mode === "team" ? <TeamEditor value={team} onChange={setTeam} /> : <details className="agent-execution-policy"><summary>协作能力（供团队发现和调用）</summary>
-          <Field label="能力标签" hint="使用英文标识，多个标签用逗号分隔。"><input name="capability_keys" defaultValue={agent?.capability_keys?.join(", ")} placeholder="normalize, analysis" /></Field>
-          <Field label="任务接口" hint="开发者配置：声明输入和输出的名称、版本及 JSON Schema。发布后可由团队选择。"><textarea rows={10} value={contracts} onChange={(event) => setContracts(event.target.value)} /></Field>
-          <Button type="button" variant="ghost" onClick={() => setContracts(JSON.stringify(memberContracts, null, 2))}>填入文本整理接口示例</Button>
-        </details>}
         <Field label="简短描述">
           <input
             name="description"
@@ -713,11 +688,6 @@ function AgentEditor({
               <span>
                 当前时间<small>查询当前日期与时间</small>
               </span>
-            </label>
-            <label>
-              <input type="checkbox" name="tools" value="generate_sandboxed_ui"
-                defaultChecked={agent?.tools.includes("generate_sandboxed_ui")} />
-              <span>生成可视化界面<small>在对话中生成交互图表、演示和小工具</small></span>
             </label>
           </div>
         </div>
@@ -1963,7 +1933,7 @@ function RunTable({
               <td className="numeric">{money(run.cost, 6)}</td>
               <td className="muted nowrap">{dateTime(run.created_at)}</td>
               <td className="align-right">
-                <Button
+                {run.session_id ? <Button
                   variant="ghost"
                   onClick={() =>
                     navigate(`playground?session=${run.session_id}`)
@@ -1971,7 +1941,7 @@ function RunTable({
                 >
                   查看会话
                   <ExternalLink size={14} />
-                </Button>
+                </Button> : <span className="muted">模型 API 调用</span>}
               </td>
             </tr>
           ))}

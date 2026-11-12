@@ -1,25 +1,22 @@
-"""Shared, metered model invocation for single agents and team executions."""
+"""Metered model invocation for normal conversations."""
 
 import asyncio
 import json
 import time
-from contextlib import suppress
-from dataclasses import asdict, replace
+from dataclasses import replace
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
-from sqlalchemy import func, insert, select, update
+from sqlalchemy import insert, select, update
 
 from agent_platform.infrastructure import gateway_tables as gt
 from agent_platform.infrastructure import runtime_tables as rt
 from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure.errors import PlatformError
-from agent_platform.infrastructure.remote_call_tables import calls as remote_calls
 from agent_platform.modules.billing.service import BillingService, reservations_table
 from agent_platform.modules.execution_policy import effective_limits, read_policy
 from agent_platform.modules.run_records import now, uid
 
-from .context import ExecutionContext
 from .engine import RunCancelled
 from .gateway import Gateway, GatewayError, ModelReply
 
@@ -41,16 +38,6 @@ def sync_call_receipt(platform: "Platform | WorkerServices", receipt: dict) -> N
     if isinstance(raw, str):
         raw = json.loads(raw)
     with platform.db.transaction(f"tenant:{receipt['tenant_id']}") as connection:
-        if receipt.get("charge_kind") == "fixed":
-            connection.execute(
-                update(remote_calls)
-                .where(
-                    remote_calls.c.id == receipt["call_id"],
-                    remote_calls.c.tenant_id == receipt["tenant_id"],
-                )
-                .values(status=status, updated_at=receipt.get("updated_at", now()))
-            )
-            return
         connection.execute(
             update(t.calls)
             .where(
@@ -84,10 +71,8 @@ class InvocationService:
 
     def _authorize_identity(self, connection, run):
         identity = self.controller._authorize_identity(connection, run)
-        for agent_id in {
-            run["spec"].get("id"),
-            run.get("root_spec", run["spec"]).get("id"),
-        } - {None}:
+        agent_id = run["spec"].get("id")
+        if agent_id:
             available = connection.scalar(
                 select(t.agents.c.available).where(
                     t.agents.c.tenant_id == run["tenant_id"],
@@ -102,10 +87,7 @@ class InvocationService:
         return self.controller.is_cancelled(run)
 
     def event(self, run, kind, data):
-        attribution = {
-            key: run[key] for key in ("task_id", "execution_id") if run.get(key)
-        }
-        self.controller.event(run, kind, {**data, **attribution})
+        self.controller.event(run, kind, data)
 
     def authorize_call(
         self, connection, run: dict, input_tokens: int, amount: Decimal
@@ -146,7 +128,7 @@ class InvocationService:
         self.authorize_budget(connection, run, input_tokens, amount, max_output)
 
     def authorize_budget(self, connection, run, input_tokens, amount, max_output):
-        """Called inside the admission transaction for both local and remote calls."""
+        """Called inside the admission transaction for model calls."""
         existing = list(
             connection.execute(
                 select(reservations_table).where(
@@ -167,73 +149,11 @@ class InvocationService:
             ),
             Decimal(0),
         )
-        policy = read_policy(run.get("root_spec", run["spec"]))
-        limits = run.get("root_spec", run["spec"]).get(
+        policy = read_policy(run["spec"])
+        limits = run["spec"].get(
             "execution_limits", effective_limits(policy, self.settings)
         )
         max_cost = min(self.max_run_cost, Decimal(limits["max_cost"]))
-        team = run.get("root_spec", run["spec"]).get("team_snapshot")
-        if team and run.get("execution_role") != "summary":
-            max_cost *= 1 - Decimal(str(team["definition"]["summary_reserve_fraction"]))
-        if run.get("execution_id"):
-            member_ids = (
-                select(t.calls.c.id)
-                .where(
-                    t.calls.c.tenant_id == run["tenant_id"],
-                    t.calls.c.execution_id == run["execution_id"],
-                )
-                .union(
-                    select(remote_calls.c.id).where(
-                        remote_calls.c.tenant_id == run["tenant_id"],
-                        remote_calls.c.execution_id == run["execution_id"],
-                    )
-                )
-            )
-            receipts = list(
-                connection.execute(
-                    select(reservations_table).where(
-                        reservations_table.c.tenant_id == run["tenant_id"],
-                        reservations_table.c.call_id.in_(member_ids),
-                    )
-                ).mappings()
-            )
-            member_cost = sum(
-                (
-                    Decimal(str(r["cost"]))
-                    + (
-                        Decimal(str(r["amount"]))
-                        if r["status"] in ("reserved", "unresolved")
-                        else Decimal(0)
-                    )
-                    for r in receipts
-                ),
-                Decimal(0),
-            )
-            member_limits = run["spec"].get(
-                "execution_limits",
-                effective_limits(read_policy(run["spec"]), self.settings),
-            )
-            if member_cost + amount > Decimal(member_limits["max_cost"]):
-                raise PlatformError(
-                    402, "task_budget_exceeded", "成员任务费用达到上限。"
-                )
-            member_policy = read_policy(run["spec"])
-            member_tokens = sum(
-                (r["input_tokens"] or 0) + (r["output_tokens"] or 0)
-                if r["status"] == "settled"
-                else r["estimated_input_tokens"] + r["max_output_tokens"]
-                if r["status"] in ("reserved", "unresolved")
-                else 0
-                for r in receipts
-            )
-            if (
-                member_policy.max_total_tokens is not None
-                and member_tokens + input_tokens + max_output
-                > member_policy.max_total_tokens
-            ):
-                raise PlatformError(
-                    400, "task_token_budget_exceeded", "成员任务 Token 达到上限。"
-                )
         if committed + amount > max_cost:
             raise PlatformError(
                 402,
@@ -423,66 +343,11 @@ class InvocationService:
                     connection, run["tenant_id"], call_id, attempt_id or call_id
                 )
 
-    def assert_call_limit(self, connection, run):
-        team = run.get("root_spec", run["spec"]).get("team_snapshot")
-        if not team:
-            return
-        count = member_count = 0
-        for table, root_key in ((t.calls, "run_id"), (remote_calls, "root_run_id")):
-            query = (
-                select(func.count())
-                .select_from(table)
-                .where(
-                    table.c.tenant_id == run["tenant_id"],
-                    table.c[root_key] == run["id"],
-                    table.c.status != "rejected",
-                )
-            )
-            count += connection.scalar(query)
-            member_count += connection.scalar(
-                query.where(table.c.execution_id == run.get("execution_id"))
-            )
-        limit = team["definition"]["max_model_calls"] - (
-            run.get("execution_role") != "summary"
-        )
-        if count >= limit:
-            raise PlatformError(429, "team_call_limit", "团队调用次数达到上限。")
-        if member_count >= run["spec"]["max_steps"]:
-            raise PlatformError(429, "task_call_limit", "成员调用次数达到上限。")
-
-    def register_call(self, run: dict, call_id: str, *, resume=False) -> None:
+    def register_call(self, run: dict, call_id: str) -> None:
         model = run["spec"]["model"]
         with self.db.transaction(f"tenant:{run['tenant_id']}") as connection:
             self._assert_lease(connection, run)
-            if resume:
-                previous = (
-                    connection.execute(
-                        select(t.calls).where(
-                            t.calls.c.tenant_id == run["tenant_id"],
-                            t.calls.c.id == call_id,
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-                if previous:
-                    if (
-                        previous["run_id"] != run["id"]
-                        or previous["execution_id"] != run.get("execution_id")
-                        or previous["status"] not in {"admitting", "running"}
-                    ):
-                        raise PlatformError(
-                            409, "call_resume_conflict", "调用状态不允许继续。"
-                        )
-                    return
-            self.assert_call_limit(connection, run)
-            user = (
-                connection.execute(
-                    select(t.users).where(t.users.c.id == run["user_id"])
-                )
-                .mappings()
-                .one()
-            )
+            user = self._authorize_identity(connection, run)
             connection.execute(
                 insert(t.calls).values(
                     id=call_id,
@@ -492,8 +357,6 @@ class InvocationService:
                     model_id=model["id"],
                     model=model["alias"],
                     agent_name=run["agent_name"],
-                    task_id=run.get("task_id"),
-                    execution_id=run.get("execution_id"),
                     user_email=user["email"],
                     status="admitting",
                     input_tokens=0,
@@ -508,71 +371,21 @@ class InvocationService:
 
     async def invoke(
         self,
-        context: ExecutionContext,
+        run: dict,
         messages: list[dict],
         tools: list[dict],
-        *,
-        journal=None,
-        operation_key=None,
     ) -> ModelReply:
-        run = context.invocation_run()
         with self.db.tenant_scope(run["tenant_id"]):
-            record = None
-            if journal is not None:
-                record = await asyncio.to_thread(
-                    journal.prepare,
-                    operation_key,
-                    "model",
-                    {"spec": context.spec, "messages": messages, "tools": tools},
-                )
-                action = await asyncio.to_thread(journal.recovery_action, record["id"])
-                if action == "reuse_result":
-                    reply = ModelReply(
-                        **await asyncio.to_thread(journal.result, record["id"])
-                    )
-                    # Output and fee evidence are independent. A crash can leave
-                    # full output confirmed but its reservation not yet settled.
-                    receipt = await asyncio.to_thread(
-                        self.platform.billing.settle,
-                        run["tenant_id"],
-                        record["call_id"],
-                        reply.input_tokens,
-                        reply.output_tokens,
-                        None,
-                        reply.raw_usage,
-                    )
-                    await asyncio.to_thread(sync_call_receipt, self.platform, receipt)
-                    await asyncio.to_thread(
-                        self.event,
-                        run,
-                        "model.restored",
-                        {
-                            "call_id": record["call_id"],
-                            "content": reply.content,
-                        },
-                    )
-                    return reply
-                if action != "dispatch":
-                    raise PlatformError(
-                        409,
-                        "model_output_unknown",
-                        "模型请求可能已执行，缺少完整输出证据，不能重发。",
-                    )
-            return await self._invoke(
-                run, messages, tools, journal=journal, record=record
-            )
+            return await self._invoke(run, messages, tools)
 
     async def _invoke(
         self,
         run: dict,
         messages: list[dict],
         tools: list[dict],
-        *,
-        journal=None,
-        record=None,
     ) -> ModelReply:
-        call_id = record["call_id"] if record else uid()
-        attempt_id = record["attempt_id"] if record else uid()
+        call_id = uid()
+        attempt_id = uid()
         model = run["spec"]["model"]
         max_tokens = run["spec"]["max_tokens"]
         # Conservative UTF-8 byte bound, plus protocol framing. No cache discount
@@ -591,9 +404,7 @@ class InvocationService:
             Decimal(model["input_price"]) * estimate
             + Decimal(model["output_price"]) * max_tokens
         ) / Decimal(1000000)
-        await asyncio.to_thread(
-            self.register_call, run, call_id, resume=record is not None
-        )
+        await asyncio.to_thread(self.register_call, run, call_id)
         billing = BillingService(
             self.db,
             self.settings.redis_url,
@@ -606,29 +417,6 @@ class InvocationService:
         receipt = None
         reply = None
         try:
-            if record:
-                with self.db.read() as connection:
-                    existing = (
-                        connection.execute(
-                            select(reservations_table).where(
-                                reservations_table.c.tenant_id == run["tenant_id"],
-                                reservations_table.c.call_id == call_id,
-                            )
-                        )
-                        .mappings()
-                        .first()
-                    )
-                if existing:
-                    if (
-                        existing["status"] != "reserved"
-                        or existing["run_id"] != run["id"]
-                    ):
-                        raise PlatformError(
-                            409,
-                            "reservation_resume_conflict",
-                            "预占证据不允许继续发送。",
-                        )
-                    receipt, reserved = dict(existing), True
             # Shield transaction completion so cancellation cannot orphan a newly
             # committed reservation whose result the coroutine never received.
             reservation_task = (
@@ -662,12 +450,6 @@ class InvocationService:
             if await asyncio.to_thread(self.is_cancelled, run):
                 raise RunCancelled()
             inference, routing = await asyncio.to_thread(self._resolve_inference, run)
-            if record:
-                record = await asyncio.to_thread(
-                    journal.mark_sent,
-                    record["id"],
-                    expected_revision=record["revision"],
-                )
             await asyncio.to_thread(
                 self._record_attempt, run, call_id, routing, attempt_id
             )
@@ -752,13 +534,6 @@ class InvocationService:
                     "logical_call_id": call_id,
                 },
             )
-            if record:
-                record = await asyncio.to_thread(
-                    journal.confirm,
-                    record["id"],
-                    asdict(reply),
-                    expected_revision=record["revision"],
-                )
             # Settlement does not depend on current user permissions: a revoked
             # account must still pay for usage already produced upstream.
             settlement = asyncio.create_task(
@@ -800,18 +575,6 @@ class InvocationService:
             )
             return reply
         except BaseException as exc:
-            if record and record["state"] in {"prepared", "sent"}:
-                # Lost authority may prevent this marker. Durable sent alone is
-                # already enough to prohibit replay, even when cleanup fails.
-                with suppress(PlatformError, TimeoutError):
-                    operation = (
-                        journal.reject
-                        if record["state"] == "prepared"
-                        else journal.mark_unknown
-                    )
-                    await asyncio.to_thread(
-                        operation, record["id"], expected_revision=record["revision"]
-                    )
             if isinstance(exc, GatewayError) and not exc.request_sent:
                 sent = False
             if reserved:

@@ -16,7 +16,7 @@ from agent_platform.infrastructure.db import Database
 
 
 class AgentMigrationTest(unittest.TestCase):
-    def test_upgrade_preserves_existing_agent_versions_and_sessions(self):
+    def test_upgrade_retires_existing_agent_and_preserves_session(self):
         with tempfile.TemporaryDirectory() as directory:
             url = f"sqlite:///{Path(directory) / 'platform.db'}"
             config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
@@ -71,18 +71,13 @@ class AgentMigrationTest(unittest.TestCase):
                     agent = conn.execute(
                         text("SELECT model_id,builtin_key,name FROM platform_agents")
                     ).one()
-                    self.assertEqual(tuple(agent), ("model", None, "Existing agent"))
+                    self.assertEqual(tuple(agent), (None, "normal", "normal"))
+                    normal_id = conn.scalar(text("SELECT id FROM platform_agents"))
                     self.assertEqual(
-                        json.loads(
-                            conn.scalar(
-                                text("SELECT spec FROM platform_agent_versions")
-                            )
-                        ),
-                        spec,
+                        conn.scalar(text("SELECT agent_id FROM platform_sessions")), normal_id,
                     )
                     self.assertEqual(
-                        conn.scalar(text("SELECT agent_id FROM platform_sessions")),
-                        "agent",
+                        conn.scalar(text("SELECT title FROM platform_sessions")), "Keep conversation",
                     )
                     self.assertIsNone(
                         conn.scalar(text("SELECT deleted_at FROM platform_sessions"))

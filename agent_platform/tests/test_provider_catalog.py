@@ -304,7 +304,7 @@ class ProviderCatalogTests(unittest.TestCase):
         with (
             patch(
                 "agent_platform.modules.provider_catalog.public_addresses",
-                side_effect=PlatformError(403, "remote_address_blocked", "blocked"),
+                side_effect=PlatformError(403, "provider_address_blocked", "blocked"),
             ),
             patch(
                 "agent_platform.modules.provider_catalog.PinnedHTTPSConnection"
@@ -320,7 +320,7 @@ class ProviderCatalogTests(unittest.TestCase):
     def test_real_https_model_list_handles_connection_close_with_certificate_validation(
         self,
     ):
-        from agent_platform.tests.remote_https_fixture import https_peer
+        from agent_platform.tests.provider_https_fixture import https_peer
 
         with https_peer() as peer:
             peer["models"] = [{"id": "model-from-live-peer", "owned_by": "fixture"}]
@@ -329,11 +329,11 @@ class ProviderCatalogTests(unittest.TestCase):
                 return_value=["127.0.0.1"],
             ):
                 models = ProviderClient().list_models(
-                    peer["origin"] + "/agent", "temporary-remote-test-secret"
+                    peer["origin"] + "/agent", "temporary-provider-test-secret"
                 )
             self.assertEqual([m["id"] for m in models], ["model-from-live-peer"])
             self.assertEqual(peer["requests"], [("GET", "/agent/models")])
-            self.assertEqual(set(peer["sni"]), {"remote.example.test"})
+            self.assertEqual(set(peer["sni"]), {"provider.example.test"})
 
     def test_response_parser_projects_metadata_and_rejects_invalid_identifiers(self):
         rows = parse_models(

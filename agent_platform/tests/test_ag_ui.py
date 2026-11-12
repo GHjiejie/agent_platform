@@ -25,7 +25,6 @@ from agent_platform.modules.gateway_control import GatewayService
 from agent_platform.modules.run_records import append_event, now, uid
 from agent_platform.modules.runtime.gateway import GatewayEvent, ModelReply
 from agent_platform.tests.fixtures import PASSWORD, MultiTenantFixture, migrate
-from agent_platform.tests.generative_ui_fixture import COUNTER_UI
 from agent_platform.tests.test_event_notifications import RequestFixture, eventually
 from agent_platform.tests.test_execution_lifecycle import (
     OfflineControl,
@@ -66,33 +65,6 @@ class ToolInference:
             assert messages[-1]["tool_call_id"] == "tool-1"
             yield GatewayEvent("text", {"text": "结果是 5。"})
             reply = ModelReply("结果是 5。", [], 15, 5, {"private": "not-for-ui"})
-        yield GatewayEvent("result", reply)
-
-
-class UiInference:
-    def __init__(self, arguments=None):
-        self.arguments = COUNTER_UI if arguments is None else arguments
-        self.messages = []
-
-    async def stream(self, messages, _model, _max_tokens, _temperature, _tools):
-        self.messages.append(messages)
-        if messages[-1]["role"] == "user":
-            reply = ModelReply(
-                "",
-                [
-                    {
-                        "id": "ui-1",
-                        "name": "generate_sandboxed_ui",
-                        "args": self.arguments,
-                    }
-                ],
-                20,
-                10,
-                {},
-            )
-        else:
-            yield GatewayEvent("text", {"text": "已生成计数器。"})
-            reply = ModelReply("已生成计数器。", [], 20, 5, {})
         yield GatewayEvent("result", reply)
 
 
@@ -471,102 +443,6 @@ class AgUIContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.count(t.runs), 1)
         self.assertEqual(self.count(t.messages), 2)
         self.assertEqual(gateway.calls, 1)
-
-    async def test_generated_ui_is_durable_replayable_and_revisable(self):
-        self.platform.save_agent(
-            self.user, {"tools": ["generate_sandboxed_ui"]}, self.agent["id"]
-        )
-        self.platform.publish(self.user, self.agent["id"])
-        gateway = UiInference()
-        run, _, events = await self.execute_request(gateway)
-        activities = [
-            (cursor, event)
-            for cursor, event in events
-            if event["type"] == "ACTIVITY_SNAPSHOT"
-        ]
-        self.assertEqual(len(activities), 1)
-        cursor, activity = activities[0]
-        self.assertEqual(activity["activityType"], "GENERATIVE_UI")
-        self.assertEqual(activity["content"]["html"], [COUNTER_UI["html"]])
-        self.assertFalse(activity["content"]["generating"])
-        async with self.client() as client:
-            detail = (
-                await client.get(self.path(f"/sessions/{self.session['id']}"))
-            ).json()
-            replay = await client.get(
-                self.path(f"/runs/{run['id']}/ag-ui"), headers={"Last-Event-ID": cursor}
-            )
-        self.assertEqual(detail["artifacts"][0]["id"], activity["messageId"])
-        self.assertEqual(detail["artifacts"][0]["run_id"], run["id"])
-        self.assertTrue(
-            all(message["run_id"] == run["id"] for message in detail["messages"])
-        )
-        snapshots = [
-            event
-            for _, event in frames(replay.text)
-            if event["type"] == "MESSAGES_SNAPSHOT"
-        ]
-        for snapshot in snapshots:
-            self.assertEqual(
-                sum(message["role"] == "activity" for message in snapshot["messages"]),
-                1,
-            )
-        self.body["runId"] = "client-run-2"
-        self.body["messages"] = [
-            {"id": "client-message-2", "role": "user", "content": "把按钮改成蓝色"}
-        ]
-        await self.execute_request(gateway)
-        followup = gateway.messages[2]
-        self.assertEqual(followup[-1]["content"], "把按钮改成蓝色")
-        self.assertEqual(followup[-2]["role"], "assistant")
-        self.assertEqual(
-            json.loads(followup[-2]["content"].split("\n", 1)[1])["html"],
-            COUNTER_UI["html"],
-        )
-        from agent_platform.modules.runtime.generative_ui import (
-            previous_ui_context,
-            session_artifacts,
-        )
-
-        with self.db.read() as connection:
-            self.assertEqual(
-                session_artifacts(
-                    connection, self.fixture.tenant_b, self.session["id"]
-                ),
-                [],
-            )
-            self.assertIsNone(
-                previous_ui_context(
-                    connection,
-                    {
-                        **run,
-                        "tenant_id": self.fixture.tenant_b,
-                        "spec": {"tools": ["generate_sandboxed_ui"]},
-                    },
-                )
-            )
-
-    async def test_invalid_or_unauthorized_ui_does_not_emit_an_artifact(self):
-        for tools, arguments in [
-            ([], COUNTER_UI),
-            (["generate_sandboxed_ui"], {**COUNTER_UI, "jsExpressions": []}),
-        ]:
-            self.platform.save_agent(self.user, {"tools": tools}, self.agent["id"])
-            self.platform.publish(self.user, self.agent["id"])
-            self.body["runId"] = uid()
-            self.body["messages"] = [
-                {"id": uid(), "role": "user", "content": "生成界面"}
-            ]
-            _, _, events = await self.execute_request(UiInference(arguments))
-            self.assertFalse(
-                any(event["type"] == "ACTIVITY_SNAPSHOT" for _, event in events)
-            )
-            results = [
-                json.loads(event["content"])
-                for _, event in events
-                if event["type"] == "TOOL_CALL_RESULT"
-            ]
-            self.assertFalse(results[0]["ok"])
 
     async def test_tools_have_start_args_end_result_and_stable_ids(self):
         gateway = ToolInference()

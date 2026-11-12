@@ -1,5 +1,7 @@
 # 前端 API 契约与页面映射
 
+> 2026-11-12：当前接口文档入口为 `/api/docs`、`/api/redoc` 和 `/api/openapi.json`。个人 API 密钥管理及 `/v1` 模型服务的请求、响应和鉴权见[前端接口接入](frontend-api-access.md)；下文保留原有页面映射。
+
 > 2026-10-15 更新：Playground 已迁移到 AG-UI 1.0 POST/SSE，详见 [AG-UI 当前契约](ag-ui-protocol.md)。下文基线中的旧 Run 202 / 自定义事件 API 保留为兼容接口，不再由 Playground 使用。具体请求 schema 以 OpenAPI、官方 AG-UI SDK 和生成类型为准。
 
 > 基线：`master` @ `db1ab95367b53d84e68cb39f59c97715ccce37a0`，2026-10-02 源码核查。本文为 [前端功能规格](frontend-functional-spec.md) 的接口参考。所有例子都是结构示意，ID须从实际响应取得，Cookie/CSRF/邀请令牌由真实会话或专用响应提供；不包含真实凭据。未执行 live API、测试或服务启动。

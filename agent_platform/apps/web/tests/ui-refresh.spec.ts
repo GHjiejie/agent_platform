@@ -323,14 +323,28 @@ test.describe("流式输出体验", () => {
   });
 });
 
-test("新对话默认 normal，切换助手后新建仍重置为 normal", async ({ page }) => {
+test("我的 Agent 只展示 normal，编辑器不提供已移除的执行方式", async ({ page }, info) => {
+  const mock = await fixture(page, { reducedAgents: true });
+  await page.goto("/#agents?tenant=team-a");
+  await expect(page.locator(".agent-card")).toHaveCount(1);
+  await expect(page.locator(".agent-card h2")).toHaveText("normal");
+  await expect(page.getByRole("button", { name: "团队协作设置" })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath("normal-only-agents.png"), fullPage: true });
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await expect(page.getByText("执行方式", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("协作能力（供团队发现和调用）", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /生成可视化界面/ })).toHaveCount(0);
+  expect(mock.errors).toEqual([]);
+});
+
+test("新对话只提供 normal，新建和发送消息使用 normal", async ({ page }) => {
   const mock = await fixture(page, { reducedAgents: true });
   await page.goto("/#playground?tenant=team-a");
   const picker = page.getByRole("combobox", { name: "当前 Agent", exact: true });
   await expect(picker).toContainText("normal");
   await picker.click();
-  await page.getByRole("option", { name: /^可视化界面助手/ }).click();
-  await expect(picker).toContainText("可视化界面助手");
+  await expect(page.getByRole("listbox", { name: "当前 Agent" }).locator('[role="option"]:not([aria-disabled="true"])')).toHaveCount(1);
+  await page.getByRole("option", { name: /^normal/ }).click();
   await page.getByRole("button", { name: "新建对话", exact: true }).click();
   await expect(picker).toContainText("normal");
   const input = page.getByRole("textbox", { name: "发送给 Agent 的消息" });
@@ -341,13 +355,13 @@ test("新对话默认 normal，切换助手后新建仍重置为 normal", async 
   expect(mock.errors).toEqual([]);
 });
 
-test("显式选择和历史会话保留原助手，失效助手链接回退 normal", async ({ page }) => {
+test("历史会话使用 normal，失效助手链接回退 normal", async ({ page }) => {
   const mock = await fixture(page, { reducedAgents: true });
   const picker = page.getByRole("combobox", { name: "当前 Agent", exact: true });
   await page.goto("/#playground?tenant=team-a&agent=assistant");
-  await expect(picker).toContainText("可视化界面助手");
+  await expect(picker).toContainText("normal");
   await page.goto("/#playground?tenant=team-a&session=history");
-  await expect(picker).toContainText("可视化界面助手");
+  await expect(picker).toContainText("normal");
   await expect(picker).toBeDisabled();
   await page.getByRole("button", { name: "新建对话", exact: true }).click();
   await expect(picker).toContainText("normal");

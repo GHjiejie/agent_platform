@@ -37,7 +37,6 @@ def record_receipt(
         "litellm_gateway",
         "litellm_logs",
         "manual_reconciliation",
-        "remote_agent",
     }:
         source = "litellm_gateway"
     event_id = str(
@@ -117,8 +116,6 @@ def record_receipt(
         if conflict
         else "manual"
         if source == "manual_reconciliation"
-        else "remote_final"
-        if source == "remote_agent"
         else "gateway_estimate",
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,

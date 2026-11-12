@@ -18,7 +18,7 @@ from agent_platform.modules.gateway_control import (
     _now,
     _url,
 )
-from agent_platform.modules.remote_agents.transport import (
+from agent_platform.modules.provider_transport import (
     Endpoint,
     PinnedHTTPSConnection,
     decode_json,
@@ -85,7 +85,11 @@ class ProviderClient:
             finally:
                 connection.close()
         except PlatformError as exc:
-            if exc.code.startswith("remote_"):
+            if exc.code in {
+                "invalid_provider_endpoint",
+                "provider_address_blocked",
+                "provider_dns_empty",
+            }:
                 raise PlatformError(
                     422,
                     "provider_address_invalid",

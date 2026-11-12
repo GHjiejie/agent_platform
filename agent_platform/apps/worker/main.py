@@ -14,13 +14,11 @@ from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure import tenancy_tables as nt
 from agent_platform.infrastructure.errors import PlatformError
 from agent_platform.infrastructure.events import configure_notifications
-from agent_platform.infrastructure.remote_call_tables import calls as remote_calls
 from agent_platform.modules.billing.service import reservations_table
 from agent_platform.modules.execution_policy import (
     execution_timeout,
 )
 from agent_platform.modules.run_records import append_event, now, uid
-from agent_platform.modules.runtime.context import ExecutionContext
 from agent_platform.modules.runtime.engine import RunCancelled, execute_agent
 from agent_platform.modules.runtime.invocation import (
     InvocationService,
@@ -40,7 +38,6 @@ class Worker:
         platform: "Platform | WorkerServices",
         *,
         gateway=None,
-        remote_transport=None,
     ):
         self.platform = platform
         self.db = platform.db
@@ -49,21 +46,11 @@ class Worker:
         # An explicitly injected adapter is only for offline execution fixtures.
         # Production resolves fresh tenant credentials for every external call.
         self.gateway = gateway
-        self.remote_transport = remote_transport
         self.owner = uid()
         self._claim_cursor = ""
         self._recover_cursor = ""
         self.max_run_cost = Decimal(self.settings.max_run_cost)
         self.invocation = InvocationService(self)
-        from agent_platform.modules.collaboration.task_leases import TaskLeaseQueue
-
-        self.member_queue = TaskLeaseQueue(self)
-        from agent_platform.modules.remote_agents.registry import RemoteHealthQueue
-
-        self.remote_health = RemoteHealthQueue(self, transport=remote_transport)
-        from agent_platform.modules.remote_agents.reconciliation import RemoteReconciler
-
-        self.remote_reconciler = RemoteReconciler(self, transport=remote_transport)
         if not self.max_run_cost.is_finite() or self.max_run_cost <= 0:
             raise ValueError("PLATFORM_MAX_RUN_COST must be a finite positive amount")
 
@@ -202,9 +189,6 @@ class Worker:
 
     @staticmethod
     def _close_due_run(connection, run, status: str, message: str):
-        from agent_platform.modules.collaboration.scheduler import terminalize_children
-
-        terminalize_children(connection, run, status, message)
         connection.execute(
             update(t.runs)
             .where(t.runs.c.tenant_id == run["tenant_id"], t.runs.c.id == run["id"])
@@ -250,6 +234,18 @@ class Worker:
         return identifiers
 
     def _authorize_identity(self, connection, run: dict) -> dict:
+        if run["spec"].get("source") == "model_api":
+            from agent_platform.modules.member_api_keys import MemberKeys
+
+            user, _ = MemberKeys(self.platform).check(
+                connection,
+                run["tenant_id"],
+                run["spec"]["api_key_id"],
+                run["spec"]["model_id"],
+            )
+            if user["id"] != run["user_id"]:
+                raise PlatformError(403, "access_revoked", "模型请求身份已失效。")
+            return user
         identity = {"id": run["user_id"], "tenant_id": run["tenant_id"]}
         if run["spec"].get("membership_id"):
             identity["membership_id"] = run["spec"]["membership_id"]
@@ -303,10 +299,7 @@ class Worker:
                 .one()
             )
             try:
-                if run.get("root_spec", run["spec"]).get("execution_mode") == "team":
-                    self.invocation._authorize_identity(connection, run)
-                else:
-                    self._authorize_identity(connection, run)
+                self._authorize_identity(connection, run)
                 active = True
             except PlatformError:
                 active = False
@@ -347,9 +340,7 @@ class Worker:
             await asyncio.to_thread(self.renew, run)
 
     async def invoke(self, run, messages, tools):
-        return await self.invocation.invoke(
-            ExecutionContext.from_run(run), messages, tools
-        )
+        return await self.invocation.invoke(run, messages, tools)
 
     def finish(
         self,
@@ -359,6 +350,7 @@ class Worker:
         error: str = "",
         *,
         outcome="complete",
+        error_code="",
     ) -> None:
         with self.db.transaction(f"tenant:{run['tenant_id']}") as connection:
             current = self._assert_lease(connection, run, check_deadline=False)
@@ -381,12 +373,18 @@ class Worker:
                     outcome=outcome if status == "succeeded" else None,
                 )
             )
-            from agent_platform.modules.collaboration.scheduler import (
-                terminalize_children,
-            )
+            if run["spec"].get("source") == "model_api":
+                from agent_platform.infrastructure.api_key_tables import requests
 
-            terminalize_children(connection, run, status, error)
-            if status == "succeeded":
+                connection.execute(
+                    update(requests)
+                    .where(
+                        requests.c.tenant_id == run["tenant_id"],
+                        requests.c.id == run["id"],
+                    )
+                    .values(error_code=error_code)
+                )
+            if status == "succeeded" and run["session_id"] is not None:
                 connection.execute(
                     insert(t.messages).values(
                         id=uid(),
@@ -416,8 +414,6 @@ class Worker:
             await self._execute(run)
 
     async def _execute(self, run: dict) -> None:
-        from agent_platform.modules.runtime.generative_ui import previous_ui_context
-
         pulse = asyncio.create_task(self.heartbeat(run))
         try:
             with self.db.read() as connection:
@@ -432,8 +428,6 @@ class Worker:
                         .order_by(t.messages.c.created_at)
                     ).mappings()
                 ]
-                if context := previous_ui_context(connection, run):
-                    messages.insert(max(0, len(messages) - 1), context)
             await asyncio.to_thread(
                 self.event, run, "run.started", {"status": "running"}
             )
@@ -455,14 +449,47 @@ class Worker:
                 else None
             ):
                 outcome = "complete"
-                if run["spec"].get("execution_mode") == "team":
-                    from agent_platform.modules.collaboration.scheduler import (
-                        CollaborationScheduler,
+                if run["spec"].get("source") == "model_api":
+                    from agent_platform.infrastructure.api_key_tables import requests
+                    from agent_platform.modules.model_api_contracts import (
+                        serialize_reply,
+                    )
+                    from agent_platform.modules.runtime.contracts import (
+                        validate_run_snapshot_version,
+                    )
+                    from agent_platform.modules.runtime.engine import (
+                        _cancellable_invoke,
                     )
 
-                    result, outcome = await CollaborationScheduler(self, run).run_team(
-                        messages
+                    validate_run_snapshot_version(run["spec"])
+                    with self.db.read() as connection:
+                        payload = (
+                            connection.execute(
+                                select(requests).where(
+                                    requests.c.tenant_id == run["tenant_id"],
+                                    requests.c.id == run["id"],
+                                )
+                            )
+                            .mappings()
+                            .one()
+                        )
+                    reply = await _cancellable_invoke(
+                        invoke, payload["messages"], payload["tools"], cancelled
                     )
+                    with self.db.transaction(
+                        "tenant:" + run["tenant_id"]
+                    ) as connection:
+                        self._assert_lease(connection, run)
+                        self._authorize_identity(connection, run)
+                        connection.execute(
+                            update(requests)
+                            .where(
+                                requests.c.tenant_id == run["tenant_id"],
+                                requests.c.id == run["id"],
+                            )
+                            .values(result=serialize_reply(reply))
+                        )
+                    result = reply.content
                 else:
                     result = await execute_agent(
                         run["spec"], messages, invoke, emit, cancelled
@@ -504,6 +531,7 @@ class Worker:
                     error=getattr(
                         exc, "message", "运行失败，请检查模型配置或联系管理员。"
                     ),
+                    error_code=getattr(exc, "code", "model_request_failed"),
                 )
         finally:
             pulse.cancel()
@@ -518,10 +546,7 @@ class Worker:
                 self._recover_tenant(tenant_id)
 
     def _recover_tenant(self, tenant_id: str) -> None:
-        from agent_platform.modules.collaboration.recovery import settle_journal_usage
         from agent_platform.modules.metering import apply_ready_evidence
-
-        settle_journal_usage(self, tenant_id)
 
         for _ in range(16):
             if not apply_ready_evidence(
@@ -561,17 +586,6 @@ class Worker:
                 timed_out = run["deadline"] is not None and (
                     run["deadline"] <= checked_at
                 )
-                recovery_error = None
-                if not queued and not timed_out and not run["cancel_requested"]:
-                    from agent_platform.modules.collaboration.recovery import (
-                        requeue_safe_run,
-                    )
-
-                    try:
-                        if requeue_safe_run(self, connection, run):
-                            continue
-                    except PlatformError as exc:
-                        recovery_error = exc.message
                 state = "expired" if queued or timed_out else "failed"
                 if run["cancel_requested"]:
                     state = "cancelled"
@@ -582,14 +596,12 @@ class Worker:
                     if timed_out
                     else "执行进程失联，未自动重放。"
                 )
-                if recovery_error:
-                    message = recovery_error
                 self._close_due_run(connection, run, state, message)
 
         mismatches = [
             and_(
                 reservations_table.c.status == stored,
-                func.coalesce(t.calls.c.status, remote_calls.c.status) != projected,
+                t.calls.c.status != projected,
             )
             for stored, projected in (
                 ("settled", "confirmed"),
@@ -617,13 +629,6 @@ class Worker:
                             t.calls.c.tenant_id == reservations_table.c.tenant_id,
                         ),
                     )
-                    .outerjoin(
-                        remote_calls,
-                        and_(
-                            remote_calls.c.id == reservations_table.c.call_id,
-                            remote_calls.c.tenant_id == reservations_table.c.tenant_id,
-                        ),
-                    )
                     .where(
                         reservations_table.c.tenant_id == tenant_id,
                         or_(
@@ -640,27 +645,9 @@ class Worker:
             )
         for row in receipts:
             if row["status"] == "reserved" and row["run_status"] in terminal:
-                from agent_platform.infrastructure.journal_tables import journal
-
-                with self.db.read() as connection:
-                    unsent = connection.scalar(
-                        select(journal.c.id).where(
-                            journal.c.tenant_id == tenant_id,
-                            journal.c.call_id == row["call_id"],
-                            journal.c.state.in_(("prepared", "rejected")),
-                            journal.c.sent_at.is_(None),
-                        )
-                    )
-                if unsent:
-                    receipt = self.platform.billing.release(
-                        tenant_id,
-                        row["call_id"],
-                        "执行已终止，持久日志确认请求尚未发送。",
-                    )
-                else:
-                    receipt = self.platform.billing.unresolved(
-                        tenant_id, row["call_id"], "执行结束但缺少结算证据。"
-                    )
+                receipt = self.platform.billing.unresolved(
+                    tenant_id, row["call_id"], "执行结束但缺少结算证据。"
+                )
             else:
                 from agent_platform.modules.billing.service import _serialize
 
@@ -711,55 +698,13 @@ class Worker:
 
     async def serve(self, stop: asyncio.Event) -> None:
         tasks: set[asyncio.Task] = set()
-        member_tasks: set[asyncio.Task] = set()
-        health_tasks: set[asyncio.Task] = set()
-        reconciliation_tasks: set[asyncio.Task] = set()
-        active_root_ids: set[str] = set()
         recovered_at = 0.0
         try:
-            while (
-                not stop.is_set()
-                or tasks
-                or member_tasks
-                or health_tasks
-                or reconciliation_tasks
-            ):
+            while not stop.is_set() or tasks:
                 try:
                     if time.monotonic() - recovered_at > 10:
                         await asyncio.to_thread(self.recover)
                         recovered_at = time.monotonic()
-                    if not stop.is_set() and not reconciliation_tasks:
-                        reconciliation = await asyncio.to_thread(
-                            self.remote_reconciler.claim
-                        )
-                        if reconciliation:
-                            job = asyncio.create_task(
-                                self.remote_reconciler.execute(reconciliation)
-                            )
-                            reconciliation_tasks.add(job)
-                            job.add_done_callback(reconciliation_tasks.discard)
-                    if not stop.is_set() and not health_tasks:
-                        probe = await asyncio.to_thread(self.remote_health.claim)
-                        if probe:
-                            health = asyncio.create_task(
-                                self.remote_health.execute(probe)
-                            )
-                            health_tasks.add(health)
-                            health.add_done_callback(health_tasks.discard)
-                    # Members use independent slots: a full set of waiting
-                    # root coordinators must never starve their own children.
-                    while (not stop.is_set() or tasks) and len(
-                        member_tasks
-                    ) < self.settings.worker_concurrency:
-                        claim = await asyncio.to_thread(
-                            self.member_queue.claim,
-                            root_ids=tuple(active_root_ids) if stop.is_set() else None,
-                        )
-                        if not claim:
-                            break
-                        member = asyncio.create_task(self.member_queue.execute(claim))
-                        member_tasks.add(member)
-                        member.add_done_callback(member_tasks.discard)
                     while (
                         not stop.is_set()
                         and len(tasks) < self.settings.worker_concurrency
@@ -769,13 +714,7 @@ class Worker:
                             break
                         task = asyncio.create_task(self.execute(run))
                         tasks.add(task)
-                        active_root_ids.add(run["id"])
                         task.add_done_callback(tasks.discard)
-                        task.add_done_callback(
-                            lambda _task, identifier=run["id"]: active_root_ids.discard(
-                                identifier
-                            )
-                        )
                 except Exception as exc:  # noqa: BLE001 - background supervisor retries storage availability
                     logger.error("worker cycle failed: %s", type(exc).__name__)
                 try:
@@ -788,13 +727,10 @@ class Worker:
                 except TimeoutError:
                     pass
         except BaseException:
-            for task in tasks | member_tasks | health_tasks | reconciliation_tasks:
+            for task in tasks:
                 task.cancel()
             await asyncio.gather(
                 *tasks,
-                *member_tasks,
-                *health_tasks,
-                *reconciliation_tasks,
                 return_exceptions=True,
             )
             raise
@@ -803,8 +739,5 @@ class Worker:
             # allowing existing runs to finish within the Pod's grace period.
             await asyncio.gather(
                 *tasks,
-                *member_tasks,
-                *health_tasks,
-                *reconciliation_tasks,
                 return_exceptions=True,
             )

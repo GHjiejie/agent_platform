@@ -1,9 +1,4 @@
-"""Versioned execution records for a future durable journal.
-
-These declarations do not enable graph checkpoints or external tools. A journal
-must atomically persist an intent before dispatch and compare the current run
-lease/fence when changing its state. Event streams alone are not that journal.
-"""
+"""Bounded tool schemas and supported normal execution snapshots."""
 
 from __future__ import annotations
 
@@ -11,11 +6,11 @@ import hashlib
 import json
 import math
 import re
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-SUPPORTED_RUN_SNAPSHOT_VERSIONS = (1, 2, 3, 4, 5, 6)
+SUPPORTED_RUN_SNAPSHOT_VERSIONS = (1, 2, 7)
 LEGACY_RUN_SNAPSHOT_VERSION = 1
 CURRENT_RUN_SNAPSHOT_VERSION = 2
 
@@ -24,6 +19,12 @@ def validate_run_snapshot_version(spec: dict) -> int:
     """Missing versions identify legacy snapshots; never coerce future versions."""
     if type(spec) is not dict:
         raise ValueError("Run snapshot must be a JSON object.")
+    if (
+        spec.get("execution_mode", "single") != "single"
+        or spec.get("remote_ref")
+        or spec.get("team_snapshot")
+    ):
+        raise ValueError("Only normal agent execution is supported.")
     version = spec.get("snapshot_schema_version", LEGACY_RUN_SNAPSHOT_VERSION)
     if type(version) is not int or version not in SUPPORTED_RUN_SNAPSHOT_VERSIONS:
         raise ValueError("Unsupported run snapshot version.")
@@ -293,297 +294,3 @@ class ToolContract(ContractModel):
                 "Tool replay policy must match its effects and idempotency support."
             )
         return self
-
-
-class FencingToken(ContractModel):
-    tenant_id: str = Field(min_length=1, max_length=128)
-    run_id: str = Field(min_length=1, max_length=128)
-    lease_owner: str = Field(min_length=1, max_length=128)
-    fence: int = Field(ge=1)
-    lease_expires_at: float = Field(gt=0)
-
-    def require_current(self, current: FencingToken, *, at: float):
-        if (
-            type(at) not in {int, float}
-            or not math.isfinite(at)
-            or at < 0
-            or at >= current.lease_expires_at
-        ):
-            raise ValueError("The current execution lease has expired.")
-        if (self.tenant_id, self.run_id, self.lease_owner, self.fence) != (
-            current.tenant_id,
-            current.run_id,
-            current.lease_owner,
-            current.fence,
-        ):
-            raise ValueError("The execution fencing token is stale.")
-
-
-class StepIdentity(ContractModel):
-    tenant_id: str = Field(min_length=1, max_length=128)
-    run_id: str = Field(min_length=1, max_length=128)
-    step_id: str = Field(min_length=1, max_length=128)
-    index: int = Field(ge=1)
-
-
-class ExecutionIntent(ContractModel):
-    execution_id: str = Field(min_length=1, max_length=128)
-    step: StepIdentity
-    fencing: FencingToken
-    tool: ToolContract
-    tool_call_id: str = Field(min_length=1, max_length=128)
-    arguments: dict
-    arguments_digest: str = Field(pattern=_SHA256)
-    contract_digest: str = Field(pattern=_SHA256)
-    idempotency_key: str | None = Field(default=None, min_length=16, max_length=256)
-    created_at: float = Field(gt=0)
-    deadline: float = Field(gt=0)
-
-    @field_validator("arguments", mode="before")
-    @classmethod
-    def serializable_arguments(cls, value):
-        canonical_digest(value)
-        return value
-
-    @model_validator(mode="after")
-    def coherent_intent(self):
-        if (self.step.tenant_id, self.step.run_id) != (
-            self.fencing.tenant_id,
-            self.fencing.run_id,
-        ):
-            raise ValueError(
-                "Step and fencing token must belong to the same tenant and run."
-            )
-        if (
-            self.deadline <= self.created_at
-            or self.created_at >= self.fencing.lease_expires_at
-        ):
-            raise ValueError(
-                "Intent must be prepared under a live execution lease and deadline."
-            )
-        if canonical_digest(self.arguments) != self.arguments_digest:
-            raise ValueError("Execution arguments do not match their frozen digest.")
-        if canonical_digest(self.tool.model_dump(mode="json")) != self.contract_digest:
-            raise ValueError("Tool declaration does not match its frozen digest.")
-        validate_value(self.tool.input_schema, self.arguments)
-        if (self.tool.effect == "external") != (self.idempotency_key is not None):
-            raise ValueError("External effects require one durable idempotency key.")
-        return self
-
-    def authorize_dispatch(self, current: FencingToken, *, at: float):
-        self.fencing.require_current(current, at=at)
-        if (
-            at < self.created_at
-            or at >= self.deadline
-            or canonical_digest(self.arguments) != self.arguments_digest
-            or canonical_digest(self.tool.model_dump(mode="json"))
-            != self.contract_digest
-        ):
-            raise ValueError("Execution intent has expired or changed.")
-
-
-class ExecutionEvidence(ContractModel):
-    kind: Literal["local_result", "external_receipt"]
-    result_digest: str = Field(pattern=_SHA256)
-    observed_at: float = Field(gt=0)
-    provider_request_id: str | None = Field(default=None, min_length=1, max_length=256)
-    idempotency_key: str | None = Field(default=None, min_length=16, max_length=256)
-
-    @model_validator(mode="after")
-    def receipt_proof(self):
-        if self.kind == "external_receipt" and (
-            not self.provider_request_id or not self.idempotency_key
-        ):
-            raise ValueError(
-                "External confirmation requires provider and idempotency evidence."
-            )
-        if self.kind == "local_result" and (
-            self.provider_request_id or self.idempotency_key
-        ):
-            raise ValueError("Local execution cannot claim an external receipt.")
-        return self
-
-
-class DurableExecutionRecord(ContractModel):
-    """Prospective journal row, not proof that the current graph persisted a step."""
-
-    intent: ExecutionIntent
-    revision: int = Field(ge=1)
-    persisted_at: float = Field(gt=0)
-    state: Literal["prepared", "sent", "confirmed", "rejected", "unknown"]
-    sent_at: float | None = Field(default=None, gt=0)
-    completed_at: float | None = Field(default=None, gt=0)
-    result: dict | None = None
-    evidence: ExecutionEvidence | None = None
-    reason: str | None = Field(default=None, min_length=1, max_length=500)
-
-    @field_validator("result", mode="before")
-    @classmethod
-    def serializable_result(cls, value):
-        if value is not None:
-            canonical_digest(value)
-        return value
-
-    @model_validator(mode="after")
-    def state_evidence(self):
-        if self.persisted_at < self.intent.created_at:
-            raise ValueError("Journal commit cannot precede intent preparation.")
-        if self.sent_at is not None and self.sent_at >= self.intent.deadline:
-            raise ValueError("Dispatch must precede the execution deadline.")
-        if self.sent_at is not None and self.sent_at < self.persisted_at:
-            raise ValueError("Dispatch must follow the durable intent commit.")
-        if self.completed_at is not None and self.completed_at < (
-            self.sent_at or self.persisted_at
-        ):
-            raise ValueError("Completion cannot precede dispatch or commit.")
-        if self.state == "prepared" and any(
-            value is not None
-            for value in (
-                self.sent_at,
-                self.completed_at,
-                self.result,
-                self.evidence,
-                self.reason,
-            )
-        ):
-            raise ValueError("Prepared intents cannot claim dispatch or a result.")
-        if self.state in {"sent", "unknown", "confirmed"} and self.sent_at is None:
-            raise ValueError("This execution state requires a durable dispatch marker.")
-        if self.state in {"sent", "unknown", "rejected"} and (
-            self.result is not None or self.evidence is not None
-        ):
-            raise ValueError("Unconfirmed executions cannot claim a result.")
-        if self.state in {"sent", "unknown"} and self.completed_at is not None:
-            raise ValueError("Unresolved executions cannot claim completion.")
-        if self.state in {"unknown", "rejected"} and not self.reason:
-            raise ValueError("Unresolved or rejected executions require a reason.")
-        if self.state == "rejected" and self.completed_at is None:
-            raise ValueError("Rejected executions require a completion time.")
-        if self.state == "confirmed":
-            if (
-                self.result is None
-                or self.evidence is None
-                or self.completed_at is None
-            ):
-                raise ValueError(
-                    "Confirmed executions require a result and receipt evidence."
-                )
-            if not self.sent_at <= self.evidence.observed_at <= self.completed_at:
-                raise ValueError(
-                    "Receipt observation must follow dispatch and precede completion."
-                )
-            validate_value(self.intent.tool.output_schema, self.result)
-            if canonical_digest(self.result) != self.evidence.result_digest:
-                raise ValueError("Execution result does not match its evidence.")
-            external = self.intent.tool.effect == "external"
-            if external != (self.evidence.kind == "external_receipt") or (
-                external
-                and self.evidence.idempotency_key != self.intent.idempotency_key
-            ):
-                raise ValueError(
-                    "Receipt must prove this execution's effect and idempotency key."
-                )
-        return self
-
-
-def recovery_action(
-    record: DurableExecutionRecord, current: FencingToken, *, at: float
-) -> Literal[
-    "dispatch", "reuse_result", "recompute", "reconcile", "manual_observation", "stop"
-]:
-    """Classify recovery; never perform I/O or replay an external effect.
-
-    Recompute/dispatch after lease takeover requires journal CAS to replace the
-    old fencing token, preserving execution identity and its idempotency key.
-    Confirmed evidence can be read after expiry; new dispatch remains forbidden.
-    """
-    record = DurableExecutionRecord.model_validate(record.model_dump(mode="python"))
-    previous = record.intent.fencing
-    current.require_current(current, at=at)
-    if (
-        (previous.tenant_id, previous.run_id) != (current.tenant_id, current.run_id)
-        or current.fence < previous.fence
-        or (
-            current.fence == previous.fence
-            and current.lease_owner != previous.lease_owner
-        )
-    ):
-        raise ValueError("Recovery requires the current owner of the same tenant run.")
-    if record.state == "confirmed":
-        return "reuse_result"
-    if record.state in {"sent", "unknown"} and record.intent.tool.effect == "external":
-        return "reconcile"
-    if record.state == "rejected" or at >= record.intent.deadline:
-        return "stop"
-    if record.state == "prepared":
-        return "dispatch"
-    return {
-        "pure": "recompute",
-        "observation": "manual_observation",
-        "external": "reconcile",
-    }[record.intent.tool.effect]
-
-
-class ExecutionJournal(Protocol):
-    """Persistence adapter obligations before enabling external tools.
-
-    Uniqueness is tenant + run + step + tool_call_id. prepare is idempotent only
-    for the identical contract/version, arguments digest and idempotency key.
-    Dispatch and completion require a transaction validating the current lease,
-    fencing token and expected revision; a stale owner cannot write any result.
-    A durable sent marker precedes external I/O. An ambiguous response becomes
-    unknown; reconciliation records evidence without resending the effect.
-    """
-
-    def prepare(
-        self, intent: ExecutionIntent, current: FencingToken, *, at: float
-    ) -> DurableExecutionRecord: ...
-
-    def adopt_for_recovery(
-        self,
-        execution_id: str,
-        current: FencingToken,
-        *,
-        expected_revision: int,
-        at: float,
-    ) -> DurableExecutionRecord:
-        """CAS ownership only; preserve intent identity, state, digest and key.
-
-        It must not turn sent/unknown external effects back into prepared work.
-        Only the recovery policy can authorize a pure re-computation.
-        """
-        ...
-
-    def mark_sent(
-        self,
-        execution_id: str,
-        current: FencingToken,
-        *,
-        expected_revision: int,
-        at: float,
-    ) -> DurableExecutionRecord: ...
-
-    def confirm(
-        self,
-        execution_id: str,
-        current: FencingToken,
-        result: dict,
-        evidence: ExecutionEvidence,
-        *,
-        expected_revision: int,
-        at: float,
-    ) -> DurableExecutionRecord: ...
-
-    def mark_unknown(
-        self,
-        execution_id: str,
-        current: FencingToken,
-        reason: str,
-        *,
-        expected_revision: int,
-        at: float,
-    ) -> DurableExecutionRecord: ...
-
-    def get(
-        self, tenant_id: str, execution_id: str
-    ) -> DurableExecutionRecord | None: ...

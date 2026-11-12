@@ -6,18 +6,13 @@ from logging.config import fileConfig
 from alembic import context
 
 from agent_platform.infrastructure import (  # noqa: F401
-    checkpoint_tables,
-    collaboration_tables,
+    api_key_tables,
     gateway_tables,
-    journal_tables,
     operations_tables,
     provider_tables,
-    remote_agent_tables,
-    remote_call_tables,
     runtime_tables,
     support_tables,
     tables,
-    task_lease_tables,
     tenancy_tables,
 )
 from agent_platform.infrastructure.db import Database, metadata

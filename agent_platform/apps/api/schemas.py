@@ -9,12 +9,6 @@ from agent_platform.infrastructure.token_defaults import (
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_OUTPUT_TOKENS,
 )
-from agent_platform.modules.agent_registry.contracts import (
-    AgentDeclaration,
-    Identifier,
-    TaskContract,
-    TeamSpec,
-)
 from agent_platform.modules.execution_policy import (
     MAX_MODEL_CALLS,
     MAX_OUTPUT_TOKENS,
@@ -111,7 +105,7 @@ class ModelPatch(StrictModel):
         return ModelCreate.price(value) if value is not None else None
 
 
-class AgentCreate(StrictModel, AgentDeclaration):
+class AgentCreate(StrictModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
     system_prompt: str = Field(
@@ -122,14 +116,9 @@ class AgentCreate(StrictModel, AgentDeclaration):
     max_steps: int = Field(default=8, ge=1, le=MAX_MODEL_CALLS)
     max_tokens: int = Field(default=DEFAULT_OUTPUT_TOKENS, ge=1, le=MAX_OUTPUT_TOKENS)
     execution_policy: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
-    tools: list[Literal["calculator", "current_time", "generate_sandboxed_ui"]] = Field(
-        default_factory=list, max_length=3
+    tools: list[Literal["calculator", "current_time"]] = Field(
+        default_factory=list, max_length=2
     )
-
-
-class CollaborationSettings(StrictModel):
-    enabled: bool
-    expected_version: int = Field(ge=1)
 
 
 class AgentAvailability(StrictModel):
@@ -137,10 +126,6 @@ class AgentAvailability(StrictModel):
 
 
 class AgentPatch(StrictModel):
-    execution_mode: Literal["single", "team"] | None = None
-    capability_keys: list[Identifier] | None = Field(default=None, max_length=32)
-    task_contracts: list[TaskContract] | None = Field(default=None, max_length=16)
-    collaboration_spec: TeamSpec | None = None
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=2000)
     system_prompt: str | None = Field(default=None, min_length=1, max_length=20000)
@@ -149,9 +134,9 @@ class AgentPatch(StrictModel):
     max_steps: int | None = Field(default=None, ge=1, le=MAX_MODEL_CALLS)
     max_tokens: int | None = Field(default=None, ge=1, le=MAX_OUTPUT_TOKENS)
     execution_policy: ExecutionPolicy | None = None
-    tools: (
-        list[Literal["calculator", "current_time", "generate_sandboxed_ui"]] | None
-    ) = Field(default=None, max_length=3)
+    tools: list[Literal["calculator", "current_time"]] | None = Field(
+        default=None, max_length=2
+    )
 
 
 class SessionCreate(StrictModel):

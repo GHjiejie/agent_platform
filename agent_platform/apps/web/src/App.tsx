@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { Activity, ArrowRight, Bot, Boxes, Building2, Command, Gauge, LayoutDashboard, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, ShieldCheck, SlidersHorizontal, Sparkles, Users, Wallet, X, Mail } from "lucide-react";
+import { Activity, ArrowRight, Bot, Boxes, Building2, Command, Gauge, KeyRound, LayoutDashboard, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, ShieldCheck, SlidersHorizontal, Sparkles, Users, Wallet, X, Mail } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { api, getTenantId, resetSession, setCsrf, setTenantId, tenantLink, write } from "./api";
 import type { IdentityUser, Tenant, User } from "./types";
@@ -10,8 +10,9 @@ import { Playground } from "./Playground";
 import { InvitationPage, MembersPage, PlatformPage, PlatformGatewayPage, roleLabel } from "./Tenancy";
 import { OwnerSupportPanel, SupportPage } from "./Support";
 import { TenantExportsPanel } from "./OperationsPanel";
+import { ApiKeysPage } from "./ApiKeys";
 
-type Route = "overview" | "agents" | "playground" | "runs" | "models" | "usage" | "billing" | "users" | "quotas" | "audit" | "platform" | "gateway" | "invite" | "support" | "support-access";
+type Route = "overview" | "agents" | "playground" | "runs" | "models" | "api-keys" | "usage" | "billing" | "users" | "quotas" | "audit" | "platform" | "gateway" | "invite" | "support" | "support-access";
 type Navigation = { route: Route; title: string; icon: LucideIcon; group: string; capability?: string; platform?: boolean; };
 const navigation: Navigation[] = [
   { route: "overview", title: "工作空间概览", icon: LayoutDashboard, group: "工作空间", capability: "runs.execute" },
@@ -19,6 +20,7 @@ const navigation: Navigation[] = [
   { route: "playground", title: "Playground", icon: MessageSquare, group: "工作空间", capability: "runs.execute" },
   { route: "runs", title: "运行记录", icon: Activity, group: "工作空间", capability: "runs.read_own" },
   { route: "models", title: "模型目录", icon: Boxes, group: "资源与费用", capability: "models.read" },
+  { route: "api-keys", title: "API 密钥", icon: KeyRound, group: "资源与费用", capability: "runs.execute" },
   { route: "usage", title: "调用统计", icon: Gauge, group: "资源与费用", capability: "billing.read_own" },
   { route: "billing", title: "费用中心", icon: Wallet, group: "资源与费用", capability: "billing.read" },
   { route: "users", title: "成员管理", icon: Users, group: "组织管理", capability: "members.manage" },
@@ -255,8 +257,9 @@ function Workspace() {
         {!isGlobal && (contextLoading ? <Loading /> : contextError ? <ErrorState message={contextError} retry={() => setContextReload((value) => value + 1)} /> : !user || user.tenant_id !== selected ? <Empty title="选择一个组织" description="加入组织后即可使用组织授权的 Agent 和模型。" /> : tenant && !["active", "suspended", "closing"].includes(tenant.status) ? <Empty title="该组织当前不可用" description="组织已暂停或正在开通，请联系平台运营人员，或切换到其他组织。" /> : <>
           {safeRoute === "overview" && <DashboardPage user={user} navigate={navigate} />}
           {safeRoute === "agents" && <AgentsPage admin={canManageAgents} navigate={navigate} />}
-          {safeRoute === "playground" && <Playground name={identityName} canManageAgents={canManageAgents} />}
+          {safeRoute === "playground" && <Playground name={identityName} />}
           {safeRoute === "runs" && <RunsPage navigate={navigate} />}
+          {safeRoute === "api-keys" && <ApiKeysPage />}
           {safeRoute === "models" && <ModelsPage admin={false} canDiscover={platformCapabilities.includes("platform.models.manage")} canPrice={platformCapabilities.includes("platform.pricing.manage")} canPolicy={!readOnlyTenant && (user.capabilities?.includes("models.policy") ?? false)} />}
           {safeRoute === "users" && <MembersPage user={user} changed={refreshIdentity} />}
           {safeRoute === "support-access" && <OwnerSupportPanel user={user} />}

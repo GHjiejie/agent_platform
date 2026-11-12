@@ -10,7 +10,6 @@ import re
 from datetime import datetime
 
 from ag_ui.core import (
-    ActivitySnapshotEvent,
     BaseEvent,
     CustomEvent,
     Message,
@@ -27,9 +26,6 @@ from ag_ui.core import (
     StateSnapshotEvent,
     StepFinishedEvent,
     StepStartedEvent,
-    SubagentErrorEvent,
-    SubagentFinishedEvent,
-    SubagentStartedEvent,
     TextMessageContentEvent,
     TextMessageEndEvent,
     TextMessageStartEvent,
@@ -46,7 +42,6 @@ from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure.errors import PlatformError
 from agent_platform.modules.execution_policy import ReasoningEffort
 from agent_platform.modules.reasoning import reasoning_message, session_reasoning
-from agent_platform.modules.runtime.generative_ui import UI_ACTIVITY, activity_content
 
 PROTOCOL_VERSION = "1.0"
 TERMINAL_EVENTS = {
@@ -230,31 +225,6 @@ class Projection:
         self.call_id = "output"
         self.step: str | None = None
         self.terminal: BaseEvent | None = None
-        self.artifact_run_id = raw_run["id"]
-        self.raw_run = raw_run
-        self.children: dict[str, Projection] = {}
-        self.collaboration = {
-            "enabled": raw_run.get("spec", {}).get("execution_mode") == "team",
-            "tasks": [],
-            "executions": {},
-        }
-
-    def child_messages(self):
-        return [
-            dict(message, subagentRunId=identifier)
-            for identifier, child in self.children.items()
-            for message in child.messages
-        ]
-
-    def child(self, identifier):
-        if identifier not in self.children:
-            public = {**self.run, "id": f"{self.run['id']}:{identifier}"}
-            self.children[identifier] = Projection(
-                {"id": public["id"], "spec": {}}, public, []
-            )
-        self.children[identifier].artifact_run_id = self.artifact_run_id
-        return self.children[identifier]
-
     def prefix(self) -> list[BaseEvent]:
         return [
             RunStartedEvent(
@@ -263,12 +233,12 @@ class Projection:
                 protocol_version=PROTOCOL_VERSION,
             ),
             self.state(),
-            MessagesSnapshotEvent(messages=[*self.messages, *self.child_messages()]),
+            MessagesSnapshotEvent(messages=self.messages),
         ]
 
     def state(self) -> StateSnapshotEvent:
         return StateSnapshotEvent(
-            snapshot={"run": self.run, "collaboration": self.collaboration}
+            snapshot={"run": self.run}
         )
 
     def close_text(self) -> list[BaseEvent]:
@@ -292,109 +262,7 @@ class Projection:
     def project(self, row: dict) -> list[BaseEvent]:
         kind, data = row["type"], row["data"]
         events: list[BaseEvent] = []
-        identifier = data.get("execution_id")
-        if identifier and kind == "model.restored":
-            child = self.child(identifier)
-            child.call_id = data["call_id"]
-            events = child.close_text() + child.close_reasoning("interrupted")
-            for event in events:
-                event.subagent_run_id = identifier
-            message_id = f"assistant:{child.run['id']}:{data['call_id']}"
-            existing = next(
-                (message for message in child.messages if message["id"] == message_id),
-                None,
-            )
-            if existing:
-                existing["content"] = data["content"]
-            else:
-                child.messages.append(
-                    {"id": message_id, "role": "assistant", "content": data["content"]}
-                )
-            # Replace the full UI snapshot: streamed fragments may already exist,
-            # so appending the recovered full output would duplicate text.
-            events.append(
-                MessagesSnapshotEvent(messages=[*self.messages, *self.child_messages()])
-            )
-            return events
-        if identifier and kind not in {
-            "execution.started",
-            "execution.finished",
-            "execution.failed",
-        }:
-            child = self.child(identifier)
-            nested = {
-                **row,
-                "data": {
-                    key: value
-                    for key, value in data.items()
-                    if key not in {"execution_id", "task_id"}
-                },
-            }
-            events = child.project(nested)
-            for event in events:
-                if "subagent_run_id" in type(event).model_fields:
-                    event.subagent_run_id = identifier
-            return events
-        if kind == "collaboration.planned":
-            self.collaboration["tasks"] = copy.deepcopy(data["tasks"])
-            events = [self.state()]
-        elif kind == "task.updated":
-            for task in self.collaboration["tasks"]:
-                if task["id"] == data["task_id"]:
-                    task.update(
-                        {key: data[key] for key in ("status", "error") if key in data}
-                    )
-            events = [self.state()]
-        elif kind in {"execution.started", "execution.finished", "execution.failed"}:
-            state = (
-                "running"
-                if kind == "execution.started"
-                else data.get("status", "failed")
-            )
-            self.collaboration["executions"][identifier] = {
-                **self.collaboration["executions"].get(identifier, {}),
-                **data,
-                "status": state,
-            }
-            for task in self.collaboration["tasks"]:
-                if task["id"] == data.get("task_id"):
-                    task.update(status=state, error=data.get("error", ""))
-            child = self.child(identifier)
-            if kind == "execution.started":
-                events = [
-                    SubagentStartedEvent(
-                        subagent_run_id=identifier,
-                        name=data["name"],
-                        description=data.get("description"),
-                    )
-                ]
-            else:
-                events = child.close_text() + child.close_reasoning(
-                    "complete" if state == "succeeded" else "interrupted"
-                )
-                for event in events:
-                    event.subagent_run_id = identifier
-                if kind == "execution.finished":
-                    events.append(
-                        SubagentFinishedEvent(
-                            subagent_run_id=identifier,
-                            result={
-                                "summary": data.get("summary"),
-                                "artifact_refs": data.get("artifact_refs", []),
-                            },
-                            outcome={"type": "success"},
-                        )
-                    )
-                else:
-                    events.append(
-                        SubagentErrorEvent(
-                            subagent_run_id=identifier,
-                            message=data.get("error") or "成员执行未完成。",
-                            code=state,
-                        )
-                    )
-            events.append(self.state())
-        elif kind == "run.queued":
+        if kind == "run.queued":
             events = [CustomEvent(name="platform.queued", value={"status": "queued"})]
         elif kind in {"run.started", "run.cancelling", "run.recovering"}:
             self.run = {**self.run, "status": data.get("status", "running")}
@@ -484,18 +352,6 @@ class Projection:
                     role="tool",
                 )
             ]
-        elif kind == "artifact.created":
-            events = [
-                ActivitySnapshotEvent(
-                    message_id=f"artifact:{self.artifact_run_id}:{data['id']}",
-                    activity_type=UI_ACTIVITY,
-                    content={
-                        **activity_content(data["content"]),
-                        "validated": data.get("validated", False),
-                    },
-                    replace=True,
-                )
-            ]
         elif kind == "model.output_limit":
             events = [CustomEvent(name="platform.output_limit", value=data)]
         elif kind == "usage.updated":
@@ -529,22 +385,6 @@ class Projection:
                 "error": data.get("error", ""),
                 "outcome": data.get("outcome"),
             }
-            if self.collaboration["enabled"]:
-                self.collaboration["outcome"] = data.get("outcome")
-                for task in self.collaboration["tasks"]:
-                    if task["status"] in {
-                        "pending",
-                        "ready",
-                        "running",
-                        "waiting_capacity",
-                        "waiting_evidence",
-                    }:
-                        task.update(
-                            status="cancelled"
-                            if status in {"cancelled", "canceled"}
-                            else "blocked",
-                            error=data.get("error", ""),
-                        )
             if self.step:
                 events.append(
                     StepFinishedEvent(
@@ -584,7 +424,7 @@ class Projection:
                 )
             events.extend(
                 [
-                    MessagesSnapshotEvent(messages=[*messages, *self.child_messages()]),
+                    MessagesSnapshotEvent(messages=messages),
                     self.state(),
                 ]
             )
@@ -613,27 +453,10 @@ class Projection:
 
     def apply(self, event: BaseEvent):
         """Reconstruct the snapshot at an exact sub-event cursor on reconnect."""
-        identifier = getattr(event, "subagent_run_id", None)
-        if identifier:
-            self.child(identifier).apply(
-                event.model_copy(update={"subagent_run_id": None})
-            )
-            return
-        if isinstance(event, ActivitySnapshotEvent):
-            self.messages = [m for m in self.messages if m["id"] != event.message_id]
-            self.messages.append(
-                {
-                    "id": event.message_id,
-                    "role": "activity",
-                    "activityType": event.activity_type,
-                    "content": copy.deepcopy(event.content),
-                }
-            )
-        elif isinstance(event, MessagesSnapshotEvent):
+        if isinstance(event, MessagesSnapshotEvent):
             self.messages = [
                 message.model_dump(by_alias=True)
                 for message in event.messages
-                if not message.subagent_run_id
             ]
         elif isinstance(event, ReasoningMessageStartEvent):
             if not any(message["id"] == event.message_id for message in self.messages):

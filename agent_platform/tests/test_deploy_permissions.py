@@ -114,44 +114,19 @@ class ComposeStoragePermissionsTests(unittest.TestCase):
             "agent_platform.migrations.versions.0010_service_permissions"
         )
         self.assertEqual(migration.ROLE_NAMES, ROLE_NAMES)
-        collaboration = import_module(
-            "agent_platform.migrations.versions.0012_agent_registry"
-        )
         expected = {role: dict(grants) for role, grants in migration.PRIVILEGES.items()}
-        for role, grants in collaboration.COLLABORATION_PRIVILEGES.items():
-            for table in collaboration.COLLABORATION_TABLES:
-                expected[role][table.name] = grants
-        journal = import_module(
-            "agent_platform.migrations.versions.0014_execution_journal"
-        )
-        for role, grants in journal.JOURNAL_PRIVILEGES.items():
-            for table in journal.JOURNAL_TABLES:
-                expected[role][table.name] = grants
-        checkpoint = import_module(
-            "agent_platform.migrations.versions.0015_execution_checkpoints"
-        )
-        for role, grants in checkpoint.CHECKPOINT_PRIVILEGES.items():
-            for table in checkpoint.CHECKPOINT_TABLES:
-                expected[role][table.name] = grants
-        task_lease = import_module(
-            "agent_platform.migrations.versions.0016_member_task_leases"
-        )
-        for role, grants in task_lease.LEASE_PRIVILEGES.items():
-            expected[role][task_lease.leases.name] = grants
-        remote = import_module(
-            "agent_platform.migrations.versions.0017_remote_agent_registry"
-        )
-        for role, grants in remote.REMOTE_PRIVILEGES.items():
-            expected[role].update(grants)
-        calls = import_module(
-            "agent_platform.migrations.versions.0019_remote_agent_calls"
-        )
-        for role, grants in calls.CALL_PRIVILEGES.items():
-            expected[role][calls.calls.name] = grants
         provider = import_module(
             "agent_platform.migrations.versions.0020_provider_catalog"
         )
         for role, grants in provider.PROVIDER_PRIVILEGES.items():
+            expected[role].update(grants)
+        api_keys = import_module(
+            "agent_platform.migrations.versions.0022_member_api_keys"
+        )
+        from agent_platform.infrastructure.api_key_tables import API_KEY_PRIVILEGES
+
+        self.assertEqual(api_keys.down_revision, "0021_session_history_deletion")
+        for role, grants in API_KEY_PRIVILEGES.items():
             expected[role].update(grants)
         expected["gateway-sync"].update(
             {

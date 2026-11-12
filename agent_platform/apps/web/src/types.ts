@@ -1,4 +1,4 @@
-import type { AgentCreate, CallResponse, ExecutionPolicy, PrincipalResponse, ReasoningResponse, RunResponse, SessionResponse, WalletResponse } from "./api-contract.generated";
+import type { CallResponse, ExecutionPolicy, PrincipalResponse, ReasoningResponse, RunResponse, SessionResponse, WalletResponse } from "./api-contract.generated";
 
 export type User = {
   id: string;
@@ -28,7 +28,7 @@ export type GatewayAdmin = {
   admin_url: string;
   configured: boolean;
 };
-export type Agent = Pick<AgentCreate, "execution_mode" | "capability_keys" | "task_contracts" | "collaboration_spec"> & {
+export type Agent = {
   available?: boolean;
   id: string;
   name: string;
@@ -52,9 +52,8 @@ export type ReasoningEffort = NonNullable<ExecutionPolicy["reasoning_effort"]>;
 export type ExecutionOptions = { timeout_seconds: number | null; max_cost: string; max_steps: number; max_output_tokens: number; default_output_tokens?: number; default_context_window?: number };
 export type Run = RunResponse;
 export type Message = { id?: string; run_id?: string; role: string; content: string; created_at?: string };
-export type GeneratedArtifact = { id: string; run_id: string; content: unknown };
 export type ReasoningTrace = ReasoningResponse;
-export type SessionDetail = Session & { messages: Message[]; runs: Run[]; artifacts?: GeneratedArtifact[]; reasoning?: ReasoningTrace[] };
+export type SessionDetail = Session & { messages: Message[]; runs: Run[]; reasoning?: ReasoningTrace[] };
 export type RunEvent = {
   sequence: number;
   type: string;

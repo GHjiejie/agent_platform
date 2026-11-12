@@ -50,14 +50,6 @@ test("工具参数与结果累积到对应消息，快照可替换已重放的�
   expect(reduceMessages(messages, { type: EventType.MESSAGES_SNAPSHOT, messages: [{ id: "final", role: "assistant", content: "5" }] })).toEqual([{ id: "final", role: "assistant", content: "5" }]);
 });
 
-test("生成界面 Activity 按标识替换，结束和恢复快照保留完整代码", async () => {
-  const activity = { type: EventType.ACTIVITY_SNAPSHOT, messageId: "artifact:run:1:ui", activityType: "GENERATIVE_UI", content: { html: ["<button>增加</button>"], generating: false }, replace: true };
-  const events = await decode(`id: 7.0\ndata: ${JSON.stringify(activity)}\n\n`, 3);
-  const once = reduceMessages([], events[0].event);
-  expect(reduceMessages(once, events[0].event)).toEqual(once);
-  expect(reduceMessages([], { type: EventType.MESSAGES_SNAPSHOT, messages: once })).toEqual(once);
-  expect(once[0]).toMatchObject({ role: "activity", activityType: "GENERATIVE_UI", content: activity.content });
-});
 
 test("推理增量独立于正文，重连快照和中断状态保留内容", async () => {
   const id = "reasoning:run:call";

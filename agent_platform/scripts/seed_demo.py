@@ -184,7 +184,7 @@ def seed_demo(
                 select(t.agents).where(t.agents.c.tenant_id == tenant_id)
             ).mappings()
         }
-        if set(agents) != {"normal", "generative_ui"}:
+        if set(agents) != {"normal"}:
             raise ValueError(
                 "The demo tenant must contain exactly the two built-in assistants"
             )
@@ -216,7 +216,7 @@ def seed_demo(
                 session_index += 1
                 session_id = key(f"session:{session_index}")
                 topic, request = TOPICS[(session_index - 1) % len(TOPICS)]
-                agent = agents["generative_ui" if session_index % 5 == 0 else "normal"]
+                agent = agents["normal"]
                 start = stamp - timedelta(minutes=rng.randint(120, 30 * 24 * 60))
                 rows[t.sessions].append(
                     {

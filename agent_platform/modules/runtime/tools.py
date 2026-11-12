@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import BaseModel, ConfigDict, Field
 
 from .contracts import ToolContract
-from .generative_ui import UI_TOOL, GeneratedUiArguments, GeneratedUiResult
 
 
 class CalculatorArguments(BaseModel):
@@ -37,14 +36,6 @@ class CurrentTimeResult(BaseModel):
 
 
 _TOOL_CONTRACTS = {
-    UI_TOOL: ToolContract(
-        name=UI_TOOL,
-        implementation_version=1,
-        effect="pure",
-        replay="recompute",
-        input_schema=GeneratedUiArguments.model_json_schema(),
-        output_schema=GeneratedUiResult.model_json_schema(),
-    ),
     "calculator": ToolContract(
         name="calculator",
         implementation_version=1,
@@ -74,17 +65,10 @@ def tool_contract(name: str) -> ToolContract:
 
 
 _ARGUMENTS = {
-    UI_TOOL: GeneratedUiArguments,
     "calculator": CalculatorArguments,
     "current_time": CurrentTimeArguments,
 }
 _DESCRIPTIONS = {
-    UI_TOOL: (
-        "传输自包含的 HTML/CSS/JS 交互界面到浏览器沙箱。HTML 不含 script、内联事件或外部资源；"
-        "jsFunctions 定义函数，jsExpressions 在 DOM 已就绪后按顺序初始化并绑定事件，"
-        "共享 async 作用域，不等待 load。图表使用内联 SVG 或 canvas。"
-        "禁止网络、外部库、storage、凭证及 parent/top 访问。工具仅确认传输。"
-    ),
     "calculator": "计算基本四则运算，允许括号、小数、余数和绝对值不超过 12 的指数。",
     "current_time": "返回给定 IANA 时区（如 Asia/Shanghai）的当前 ISO 8601 时间。",
 }
@@ -157,8 +141,6 @@ def execute_tool(name: str, arguments: dict, allowed: list[str]) -> dict:
     if name not in allowed or name not in _ARGUMENTS:
         raise ValueError("工具未获此 Agent 授权。")
     params = _ARGUMENTS[name].model_validate(arguments)
-    if name == UI_TOOL:
-        return {"message": "界面代码已传输，预览和交互就绪由浏览器独立确认。"}
     if name == "calculator":
         return {"result": calculate(params.expression)}
     try:

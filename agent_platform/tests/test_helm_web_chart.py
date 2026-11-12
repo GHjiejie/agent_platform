@@ -60,6 +60,7 @@ class WebChartTests(unittest.TestCase):
 
     def test_streaming_and_identity_headers_are_preserved(self):
         config = self.resource(self.render(), "ConfigMap")["data"]["server.conf"]
+        self.assertIn("location ~ ^/(api|v1)/ {", config)
         for directive in (
             "proxy_buffering off;",
             "proxy_request_buffering off;",

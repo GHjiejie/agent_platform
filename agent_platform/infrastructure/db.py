@@ -59,15 +59,10 @@ class Database:
         # Import table declarations before metadata.create_all; no business writes.
         for module in (
             "tables",
+            "api_key_tables",
             "tenancy_tables",
             "gateway_tables",
             "runtime_tables",
-            "collaboration_tables",
-            "journal_tables",
-            "checkpoint_tables",
-            "task_lease_tables",
-            "remote_agent_tables",
-            "remote_call_tables",
             "provider_tables",
             "operations_tables",
             "support_tables",
@@ -130,14 +125,9 @@ class Database:
                     )
                 for module in (
                     "tables",
+                    "api_key_tables",
                     "gateway_tables",
                     "runtime_tables",
-                    "collaboration_tables",
-                    "journal_tables",
-                    "checkpoint_tables",
-                    "task_lease_tables",
-                    "remote_agent_tables",
-                    "remote_call_tables",
                     "provider_tables",
                     "operations_tables",
                     "metering_tables",

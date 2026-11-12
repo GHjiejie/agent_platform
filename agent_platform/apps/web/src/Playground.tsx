@@ -5,20 +5,16 @@ import {
   Copy, History, LoaderCircle, MessageSquare, Plus,
   Sparkles, Terminal, Wrench,
 } from "lucide-react";
-import { api, ApiError, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
+import { api, getScopeRevision, getTenantId, scopeIsCurrent, tenantLink, terminal, write } from "./api";
 import { Button, Modal, Select, useResource, useToast } from "./components";
-import type { Agent, GeneratedArtifact, Model, ReasoningEffort, ReasoningTrace, Run, Session, SessionDetail } from "./types";
+import type { Agent, Model, ReasoningEffort, ReasoningTrace, Run, Session, SessionDetail } from "./types";
 import type { AGUIEvent } from "./ag-ui";
 import { messageRunId } from "./ag-ui";
 import { useAgentRun } from "./useAgentRun";
 import { useChatScroll } from "./useChatScroll";
 import { MessageMarkdown } from "./MessageMarkdown";
-import { CollaborationPanel } from "./CollaborationPanel";
-import { Artifact } from "./Artifact";
 import { Reasoning, reasoningTrace } from "./Reasoning";
 import { SessionHistory } from "./SessionHistory";
-import { TeamSetup } from "./TeamSetup";
-import type { CollaborationSettingsResponse } from "./api-contract.generated";
 
 const query = () => new URLSearchParams(location.hash.split("?")[1] ?? "");
 const reasoningOptions: { value: ReasoningEffort; label: string }[] = [
@@ -30,7 +26,7 @@ const reasoningOptions: { value: ReasoningEffort; label: string }[] = [
   { value: "xhigh", label: "很高" },
   { value: "max", label: "最高" },
 ];
-export function Playground({ name, canManageAgents = false }: { name?: string; canManageAgents?: boolean }) {
+export function Playground({ name }: { name?: string }) {
   const tenantScope = useRef(getTenantId()).current;
   const scopeRevision = useRef(getScopeRevision()).current;
   const agents = useResource<{ items: Agent[] }>("/agents");
@@ -46,7 +42,6 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
   const [draft, setDraft] = useState("");
   const [liveText, setLiveText] = useState("");
   const [liveReasoning, setLiveReasoning] = useState<ReasoningTrace[]>([]);
-  const [liveArtifacts, setLiveArtifacts] = useState<GeneratedArtifact[]>([]);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [canceling, setCanceling] = useState(false);
@@ -55,7 +50,6 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
   const { viewport, content: messageContent, showLatest, followLatest } = useChatScroll(sessionId);
   const input = useRef<HTMLTextAreaElement>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [teamSetupOpen, setTeamSetupOpen] = useState(false);
   const sendKey = useRef<{
     message: string;
     session: string;
@@ -74,33 +68,20 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
   const selectedAgent = agents.data?.items.find(
     (agent) => agent.id === (detail?.agent_id ?? agentId),
   );
-  const isTeam = selectedAgent?.execution_mode === "team";
-  const collaboration = useResource<CollaborationSettingsResponse>("/agents/collaboration-settings", isTeam);
-  const collaborationNotice = !isTeam ? ""
-    : collaboration.loading || !collaboration.data && !collaboration.error ? "正在检查团队协作设置…"
-    : collaboration.error ? `无法检查团队协作设置：${collaboration.error}`
-    : !collaboration.data?.platform_enabled ? "平台尚未开放团队协作，请联系平台管理员。"
-    : !collaboration.data.enabled ? canManageAgents
-      ? "当前组织尚未开启团队协作，请打开团队协作设置并开启组织协作。"
-      : "当前组织尚未开启团队协作，请联系组织管理员开启。"
-    : "";
-  const teamRunBlocked = Boolean(collaborationNotice);
   const latestRun = detail?.runs
     .slice()
     .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
   const { run: activeRun, events, connection, error: streamError, start, attach, reset, reconnect } = useAgentRun(tenantScope, {
     messages: (messages, runId) => {
-      setLiveArtifacts(messages.flatMap((message) => message.role === "activity" && message.activityType === "GENERATIVE_UI"
-        ? [{ id: message.id, run_id: runId, content: message.content }] : []));
       const livePrefix = `assistant:${runId}:`;
       const isLiveReply = (id: string) => id === `assistant:${runId}` || id.startsWith(livePrefix);
       setLiveReasoning(messages.flatMap((message) => {
-        const trace = message.subagentRunId ? null : reasoningTrace(message);
+        const trace = reasoningTrace(message);
         return trace?.run_id === runId ? [trace] : [];
       }));
-      setLiveText(messages.filter((message) => !message.subagentRunId && message.role === "assistant" && isLiveReply(message.id))
+      setLiveText(messages.filter((message) => message.role === "assistant" && isLiveReply(message.id))
         .map((message) => typeof message.content === "string" ? message.content : "").filter(Boolean).join("\n\n"));
-      const confirmed = messages.flatMap((message) => !message.subagentRunId && ["user", "assistant"].includes(message.role) && typeof message.content === "string" && message.content && !isLiveReply(message.id)
+      const confirmed = messages.flatMap((message) => ["user", "assistant"].includes(message.role) && typeof message.content === "string" && message.content && !isLiveReply(message.id)
         ? [{ id: message.id, run_id: messageRunId(message), role: message.role, content: message.content }] : []);
       setDetail((current) => {
         if (!current || current.messages.length === confirmed.length && current.messages.every((message, index) =>
@@ -113,7 +94,7 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
       if (message) setError(message);
       // Keep the last streamed text visible until its persisted replacement is
       // ready, so completion cannot briefly empty the assistant bubble.
-      void loadSession(id, false).then((result) => { if (result) { setLiveText(""); setLiveArtifacts([]); setLiveReasoning([]); } });
+      void loadSession(id, false).then((result) => { if (result) { setLiveText(""); setLiveReasoning([]); } });
       void sessions.reload();
     },
   });
@@ -158,7 +139,7 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
     reset();
     setLiveText("");
     setLiveReasoning([]);
-    setLiveArtifacts([]);
+
     setDetail(null);
     setError("");
     if (sessionId) void loadSession(sessionId);
@@ -178,7 +159,7 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
   async function send(event: FormEvent) {
     event.preventDefault();
     const message = draft.trim();
-    if (!scopeIsCurrent(scopeRevision) || !message || activeRun || busy || loading || agents.loading || !selectedAgent || !agentId || teamRunBlocked) return;
+    if (!scopeIsCurrent(scopeRevision) || !message || activeRun || busy || loading || agents.loading || !selectedAgent || !agentId) return;
     setBusy(true);
     followLatest();
     setError("");
@@ -215,7 +196,7 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
       if (!restored || !scopeIsCurrent(scopeRevision)) return;
       setLiveText("");
       setLiveReasoning([]);
-      setLiveArtifacts([]);
+
       await start({
         threadId: id, runId: sendKey.current.key, protocolVersion: "1.0",
         messages: [{ id: sendKey.current.messageId, role: "user", content: message }],
@@ -226,7 +207,6 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
       sendKey.current = null;
       setShowEvents(false);
     } catch (err) {
-      if (err instanceof ApiError && err.code === "collaboration_disabled") void collaboration.reload();
       if (scopeIsCurrent(scopeRevision)) setError((err as Error).message);
     } finally {
       setBusy(false);
@@ -256,7 +236,7 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
     selection.current++;
     setLiveText("");
     setLiveReasoning([]);
-    setLiveArtifacts([]);
+
     setError("");
     setDraft("");
     setCanceling(false);
@@ -318,17 +298,14 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
             <h2>今天想聊些什么？</h2>
             {!agents.loading && !published.length && <p className="pg-empty-note">还没有已发布的 Agent。<a href={tenantLink("agents", tenantScope)}>先去创建并发布</a></p>}
           </div> : <div className="pg-message-list">
-            <ConversationHistory messages={detail?.messages} artifacts={detail?.artifacts} runs={detail?.runs} reasoning={detail?.reasoning}
+            <ConversationHistory messages={detail?.messages} reasoning={detail?.reasoning}
               hiddenRunId={activeRun?.id ?? liveReasoning[0]?.run_id} sessionId={sessionId} copy={copyReply} />
-            {(activeRun || liveText || liveReasoning.length > 0 || liveArtifacts.length > 0) && <article className="pg-message assistant" aria-label={activeRun ? "Agent 正在回复" : "Agent 的回复"}>
+            {(activeRun || liveText || liveReasoning.length > 0) && <article className="pg-message assistant" aria-label={activeRun ? "Agent 正在回复" : "Agent 的回复"}>
               <span className="pg-assistant-icon"><Sparkles size={22} strokeWidth={1.7} /></span>
               <div className="pg-message-content">
-                {activeRun?.execution_mode === "team" && <CollaborationPanel key={activeRun.id} runId={activeRun.id} live refreshKey={[...events].reverse().find((item) => item.event.type === "STATE_SNAPSHOT")?.id} />}
                 {liveReasoning.map((trace) => <Reasoning key={trace.id} trace={trace} streaming={Boolean(activeRun) && trace.status === "streaming"} />)}
                 {liveText ? <div className="pg-message-text"><MessageMarkdown text={liveText} streaming={Boolean(activeRun)} /></div>
                   : !liveReasoning.length && <div className="pg-thinking" role="status"><span className="thinking-dots"><i /><i /><i /></span>{activeRun?.status === "queued" ? "等待执行" : "正在思考"}</div>}
-                {liveArtifacts.filter((artifact) => !detail?.artifacts?.some((saved) => saved.id === artifact.id)).map((artifact) =>
-                  <Artifact key={artifact.id} content={artifact.content} runStatus={activeRun?.status ?? "succeeded"} />)}
               </div>
             </article>}
           </div>}
@@ -340,15 +317,7 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
       }}><ArrowDown size={17} />最新消息</button>}
       <div className="pg-compose-area">
         {effectiveError && <div className="pg-notice error" role="alert"><AlertCircle size={17} /><span>{effectiveError}</span>
-          <button onClick={() => { if (sessionId) void loadSession(sessionId); void agents.reload(); void models.reload(); if (isTeam) void collaboration.reload(); }}>重新加载</button>
-        </div>}
-        {collaborationNotice && !activeRun && <div className="pg-notice collaboration" role={collaboration.loading ? "status" : "alert"}>
-          <AlertCircle size={17} /><span id="team-collaboration-notice">{collaborationNotice}</span>
-          <div className="pg-collaboration-actions">
-            {canManageAgents && collaboration.data?.platform_enabled && !collaboration.data.enabled &&
-              <button type="button" onClick={() => setTeamSetupOpen(true)}>团队协作设置</button>}
-            <button type="button" disabled={collaboration.loading} onClick={() => void collaboration.reload()}>重新检查</button>
-          </div>
+          <button onClick={() => { if (sessionId) void loadSession(sessionId); void agents.reload(); void models.reload(); }}>重新加载</button>
         </div>}
         {connection === "retrying" && <div className="pg-notice reconnect" role="status"><LoaderCircle size={16} className="spin" />
           <span>正在恢复连接，Agent 仍在运行。</span><button onClick={() => reconnect()}>立即重连</button>
@@ -363,9 +332,9 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
             }} />
           <div className="pg-composer-toolbar">
             <div className="pg-run-settings">
-            <Select id="run-model" variant="quiet" className="pg-model-picker" aria-label={selectedAgent?.execution_mode === "team" ? "本次协调模型" : "本次使用模型"} icon={<Sparkles size={15} />}
+            <Select id="run-model" variant="quiet" className="pg-model-picker" aria-label="本次使用模型" icon={<Sparkles size={15} />}
               value={modelId} disabled={busy || Boolean(activeRun) || models.loading} searchable onChange={(event) => setModelId(event.target.value)}>
-              <option value="">{selectedAgent?.execution_mode === "team" ? "协调模型 · " : ""}{automaticModel ? `${automaticModel.name} · 自动` : selectedAgent?.model_id ? "跟随 Agent 设置" : "自动选择模型"}</option>
+              <option value="">{automaticModel ? `${automaticModel.name} · 自动` : selectedAgent?.model_id ? "跟随 Agent 设置" : "自动选择模型"}</option>
               {availableModels.map((model) => <option key={model.id} value={model.id} data-description={model.alias}>{model.name}{model.is_default ? " · 默认" : ""}</option>)}
             </Select>
             <Select id="run-reasoning" variant="quiet" className="pg-reasoning-picker" aria-label="本次思考强度" icon={<Brain size={15} />}
@@ -383,8 +352,8 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
             <span className="pg-keyboard-hint">Enter 发送</span>
             {activeRun ? <Button type="button" variant="secondary" className="pg-stop" onClick={() => void cancel()} busy={canceling}
               title="停止生成不会免除已产生的费用"><CircleStop size={17} /><span>停止生成</span></Button>
-              : <Button type="submit" className="pg-send" aria-label="发送消息" aria-describedby={teamRunBlocked ? "team-collaboration-notice" : undefined}
-                disabled={!draft.trim() || !agentId || !selectedAgent || agents.loading || loading || teamRunBlocked} busy={busy}>
+              : <Button type="submit" className="pg-send" aria-label="发送消息"
+                disabled={!draft.trim() || !agentId || !selectedAgent || agents.loading || loading} busy={busy}>
                 {!busy && <ArrowUp size={21} />}
               </Button>}
           </div>
@@ -398,7 +367,6 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
         <p className="pg-disclaimer">AI 的回答可能不准确，请核实关键信息。</p>
       </div>
     </div>
-    {teamSetupOpen && <TeamSetup close={() => setTeamSetupOpen(false)} saved={async () => { await collaboration.reload(); }} />}
     {historyOpen && <SessionHistory sessions={sessions.data?.items} loading={sessions.loading} error={sessions.error} reload={sessions.reload}
       currentSessionId={sessionId} agents={agents.data?.items} tenant={tenantScope} busy={busy} choose={chooseSession}
       deleted={(ids, options) => {
@@ -420,8 +388,8 @@ export function Playground({ name, canManageAgents = false }: { name?: string; c
     </Modal>}
   </section>;
 }
-const ConversationHistory = memo(function ConversationHistory({ messages, artifacts, runs, reasoning, hiddenRunId, sessionId, copy }: {
-  messages: SessionDetail["messages"] | undefined; artifacts: GeneratedArtifact[] | undefined; runs: Run[] | undefined;
+const ConversationHistory = memo(function ConversationHistory({ messages, reasoning, hiddenRunId, sessionId, copy }: {
+  messages: SessionDetail["messages"] | undefined;
   reasoning: ReasoningTrace[] | undefined; hiddenRunId: string | undefined;
   sessionId: string | null; copy: (content: string) => void;
 }) {
@@ -435,11 +403,6 @@ const ConversationHistory = memo(function ConversationHistory({ messages, artifa
     <div className="pg-message-content">
       {message.role === "assistant" && traces(message).map((trace) => <Reasoning key={trace.id} trace={trace} />)}
       <div className="pg-message-text">{message.role === "assistant" ? <MessageMarkdown text={message.content} /> : message.content}</div>
-      {message.role === "user" && runId(message) !== hiddenRunId && runs?.find((run) => run.id === runId(message))?.execution_mode === "team" && <CollaborationPanel key={runId(message)} runId={runId(message) ?? ""} />}
-      {artifacts?.filter((artifact) => artifact.run_id === runId(message) &&
-        (message.role === "assistant" || !messages.some((item) => item.role === "assistant" && runId(item) === artifact.run_id)))
-        .map((artifact) => <Artifact key={artifact.id} content={artifact.content}
-          runStatus={runs?.find((run) => run.id === artifact.run_id)?.status ?? "succeeded"} />)}
       {message.role === "assistant" && <button className="pg-copy icon-button" aria-label="复制回复" onClick={() => copy(message.content)}><Copy size={15} /></button>}
     </div>
   </article>

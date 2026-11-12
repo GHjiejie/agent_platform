@@ -76,15 +76,6 @@
 .pg-markdown.is-streaming > :is(p, h1, h2, h3, h4, h5, h6):last-child::after,
 .pg-markdown.is-streaming > pre:last-child code::after,
 .pg-markdown.is-streaming > :is(ul, ol):last-child > li:last-child::after { content: ""; display: inline-block; width: 3px; height: 1em; margin-left: 4px; vertical-align: -0.12em; background: #b09cc4; animation: pulse var(--motion-pulse, 1200ms) ease-in-out infinite; }
-.pg-workspace .artifact { margin: 16px 0; min-width: 0; border: 1px solid #e9e7f0; border-radius: 12px; overflow: hidden; background: #fff; }
-.pg-workspace .artifact-body { position: relative; min-width: 0; }
-.pg-workspace .artifact iframe { display: block; width: 100%; border: 0; background: transparent; }
-.pg-workspace .artifact-overlay { position: absolute; inset: 0; display: grid; place-items: center; background: #ffffffdf; padding: 18px; overflow: auto; }
-.pg-workspace .artifact-overlay.opaque { background: #fff; }
-.pg-workspace .artifact-loading, .pg-workspace .artifact-error { display: grid; gap: 10px; font-size: 13px; line-height: 1.7; color: #817b8b; }
-.pg-workspace .artifact-loading small, .pg-workspace .artifact-error small { font-size: 11px; }
-.pg-workspace .artifact-error { padding: 14px; color: #b16c80; overflow-wrap: anywhere; }
-.pg-workspace .artifact-error-details pre { max-height: 130px; white-space: pre-wrap; overflow: auto; }
 .pg-assistant-icon { width: 29px; height: 31px; display: grid; place-items: center; color: #9480bd; flex-shrink: 0; }
 .pg-copy { width: 28px; height: 28px; margin: 8px 0 0 -4px; color: #aaa3b6; }
 .pg-thinking { display: flex; align-items: center; gap: 12px; min-height: 30px; color: #a29aaf; font-size: 12px; }
@@ -99,11 +90,8 @@
 .pg-notice > svg { margin-top: 3px; }
 .pg-notice > span { flex: 1; }
 .pg-notice.error { color: #b16c80; background: #fcf3f6; border: 1px solid #f4e2e8; }
-.pg-notice.reconnect, .pg-notice.collaboration { color: #968260; background: #fbf8f1; }
+.pg-notice.reconnect { color: #968260; background: #fbf8f1; }
 .pg-notice button { margin-left: auto; padding: 1px 0; border: 0; background: transparent; font-size: 11px; color: inherit; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
-.pg-collaboration-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px 12px; }
-.pg-collaboration-actions button { margin-left: 0; }
-.pg-collaboration-actions button:disabled { cursor: wait; opacity: .6; }
 .pg-jump-latest { position: absolute; bottom: 185px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 7px; min-height: 34px; border: 1px solid #e4dfed; background: #fff; border-radius: 20px; padding: 8px 13px; color: #82728e; font-size: 11px; box-shadow: 0 3px 12px #30233d10; }
 .pg-loading { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 36px 12px; color: #9c92aa; font-size: 12px; }
 .pg-history-body, .pg-run-details { padding: 8px 24px 24px; }

@@ -2,8 +2,6 @@
 
 from dataclasses import dataclass
 
-from agent_platform.modules.runtime.generative_ui import UI_INSTRUCTIONS, UI_TOOL
-
 
 @dataclass(frozen=True)
 class BuiltinAgent:
@@ -27,17 +25,6 @@ COMMON_INSTRUCTIONS = """你是一位可靠的工作助手。默认用用户使�
 """
 
 DEFAULT_AGENT_KEY = "normal"
-RETIRED_BUILTIN_KEYS = (
-    "writing",
-    "translation",
-    "summary",
-    "meeting",
-    "planning",
-    "coding",
-    "data",
-    "support",
-)
-
 BUILTIN_AGENTS = (
     BuiltinAgent(
         "normal",
@@ -49,18 +36,6 @@ BUILTIN_AGENTS = (
             "帮我梳理一下这个想法。",
             "解释一个概念，并给出具体例子。",
         ),
-    ),
-    BuiltinAgent(
-        "generative_ui",
-        "可视化界面助手",
-        "可视化创作",
-        "生成可交互的图表、演示、仪表盘和小工具，在对话中预览并继续修改。",
-        UI_INSTRUCTIONS,
-        (
-            "生成一个可点击的计数器，支持增加、减少和重置。",
-            "用示例数据生成一个销售仪表盘，支持切换月份并查看渠道占比。",
-        ),
-        tools=(UI_TOOL,),
     ),
 )
 

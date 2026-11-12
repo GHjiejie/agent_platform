@@ -19,7 +19,8 @@ from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.routing import APIRoute
-from sqlalchemy import delete, select, update
+from fastapi.security import APIKeyCookie, APIKeyHeader
+from sqlalchemy import delete, select
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from agent_platform.apps.api import responses as r
@@ -40,18 +41,6 @@ from agent_platform.modules.platform import (
     Platform,
     audit,
     digest,
-)
-from agent_platform.modules.remote_agents.registry import (
-    AvailabilityChange as RemoteAvailabilityChange,
-)
-from agent_platform.modules.remote_agents.registry import (
-    CredentialCreate as RemoteCredentialCreate,
-)
-from agent_platform.modules.remote_agents.registry import (
-    RegistrationCreate as RemoteRegistrationCreate,
-)
-from agent_platform.modules.remote_agents.registry import (
-    RemoteRegistry,
 )
 
 logger = logging.getLogger(__name__)
@@ -190,39 +179,31 @@ class BoundaryMiddleware(BaseHTTPMiddleware):
             request_id.reset(token)
 
     async def handle(self, request: Request, call_next):
+        def reject(status, code, message):
+            body = {"error": {"code": code, "message": message}}
+            headers = {}
+            if request.url.path.startswith("/v1/"):
+                from agent_platform.apps.api.model_api import error_body
+
+                body = error_body(code, message)
+                headers["Cache-Control"] = "no-store"
+            return JSONResponse(body, status_code=status, headers=headers)
+
         if request.method not in ("GET", "HEAD", "OPTIONS"):
             origin = request.headers.get("origin")
             if origin and urlsplit(origin).netloc != request.headers.get("host"):
-                return JSONResponse(
-                    {
-                        "error": {
-                            "code": "invalid_origin",
-                            "message": "请求来源不匹配。",
-                        }
-                    },
-                    status_code=403,
-                )
+                return reject(403, "invalid_origin", "请求来源不匹配。")
             try:
-                if int(request.headers.get("content-length", "0")) > 256000:
-                    return JSONResponse(
-                        {
-                            "error": {
-                                "code": "body_too_large",
-                                "message": "请求内容过大。",
-                            }
-                        },
-                        status_code=413,
-                    )
+                limit = 262144 if request.url.path.startswith("/v1/") else 256000
+                if int(request.headers.get("content-length", "0")) > limit:
+                    return reject(413, "body_too_large", "请求内容过大。")
             except ValueError:
-                return JSONResponse(
-                    {"error": {"code": "invalid_length", "message": "请求无效。"}},
-                    status_code=400,
-                )
+                return reject(400, "invalid_length", "请求无效。")
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "same-origin"
-        if request.url.path.startswith("/api/"):
+        if request.url.path.startswith(("/api/", "/v1/")):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -253,7 +234,19 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
                 await task
         db.close()
 
-    app = FastAPI(title="Agent Platform", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(
+        title="Agent Platform",
+        version="0.1.0",
+        lifespan=lifespan,
+        docs_url="/api/docs",
+        redoc_url="/api/redoc",
+        openapi_url="/api/openapi.json",
+        swagger_ui_oauth2_redirect_url="/api/docs/oauth2-redirect",
+        description=(
+            "管理接口通过登录 Cookie 鉴权，写请求须携带 X-CSRF-Token。"
+            "个人 API 密钥只用于 /v1 模型调用，通过 Authorization: Bearer 鉴权。"
+        ),
+    )
     app.state.platform = platform
     app.state.database = db
     app.add_middleware(BoundaryMiddleware)
@@ -261,6 +254,17 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
     @app.exception_handler(PlatformError)
     async def platform_error(_request, exc):
         headers = {"Retry-After": "60"} if exc.status == 429 else None
+        if _request.url.path.startswith("/v1/"):
+            from agent_platform.apps.api.model_api import error_body
+
+            return JSONResponse(
+                error_body(exc.code, exc.message),
+                status_code=exc.status,
+                headers={
+                    **(headers or {}),
+                    **({"WWW-Authenticate": "Bearer"} if exc.status == 401 else {}),
+                },
+            )
         return JSONResponse(
             {"error": {"code": exc.code, "message": exc.message}},
             status_code=exc.status,
@@ -298,12 +302,35 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             status_code=500,
         )
 
-    def principal(request: Request):
-        context = platform.authenticate(request.cookies.get(COOKIE))
-        if request.method not in ("GET", "HEAD", "OPTIONS"):
-            csrf = request.headers.get("x-csrf-token", "")
-            if not secrets.compare_digest(csrf, context["csrf_token"]):
-                raise PlatformError(403, "csrf_failed", "会话校验失败，请刷新后重试。")
+    session_cookie = APIKeyCookie(
+        name=COOKIE,
+        scheme_name="SessionCookie",
+        description="通过 POST /api/v1/auth/login 登录后由浏览器自动携带。",
+        auto_error=False,
+    )
+    csrf_header = APIKeyHeader(
+        name="X-CSRF-Token",
+        scheme_name="CsrfToken",
+        description=(
+            "写请求必填。取登录或 GET /api/v2/me 响应中的 csrf_token，"
+            "在 Authorize 中填写一次，后续管理接口的写请求自动携带。"
+            "重新登录后需更新此值。"
+        ),
+        auto_error=False,
+    )
+
+    def principal(
+        request: Request,
+        session: str | None = Depends(session_cookie),
+        csrf_token: str | None = Depends(csrf_header),
+    ):
+        context = platform.authenticate(session)
+        if request.method not in (
+            "GET",
+            "HEAD",
+            "OPTIONS",
+        ) and not secrets.compare_digest(csrf_token or "", context["csrf_token"]):
+            raise PlatformError(403, "csrf_failed", "会话校验失败，请刷新后重试。")
         return context["user"]
 
     async def auth(request: Request, actor=Depends(principal)):
@@ -545,170 +572,11 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "context_window": settings.default_context_window,
         }
 
-    def collaboration_features():
-        return {
-            "dynamic": platform.settings.collaboration_dynamic_enabled,
-            "parallel": platform.settings.collaboration_parallel_enabled,
-            "durable": platform.settings.collaboration_durable_enabled,
-            "recovery": platform.settings.collaboration_durable_enabled
-            and platform.settings.collaboration_recovery_enabled,
-        }
-
-    @app.get(
-        "/api/v1/agents/collaboration-settings",
-        response_model=r.CollaborationSettingsResponse,
-    )
-    def collaboration_settings(user=Depends(auth)):
-        from agent_platform.infrastructure import tenancy_tables as nt
-
-        with db.read() as connection:
-            row = (
-                connection.execute(
-                    select(nt.tenant_settings).where(
-                        nt.tenant_settings.c.tenant_id == user["tenant_id"]
-                    )
-                )
-                .mappings()
-                .one()
-            )
-        return {
-            "enabled": row["collaboration_enabled"],
-            "version": row["version"],
-            "platform_enabled": settings.collaboration_enabled,
-            "features": collaboration_features(),
-        }
-
-    @app.patch(
-        "/api/v1/agents/collaboration-settings",
-        response_model=r.CollaborationSettingsResponse,
-    )
-    def update_collaboration_settings(
-        body: s.CollaborationSettings, user=Depends(admin)
-    ):
-        from agent_platform.infrastructure import tenancy_tables as nt
-        from agent_platform.modules.platform import audit
-
-        with db.transaction(f"tenant:{user['tenant_id']}") as connection:
-            platform.identity.assert_current(connection, user, "agents.manage")
-            result = connection.execute(
-                update(nt.tenant_settings)
-                .where(
-                    nt.tenant_settings.c.tenant_id == user["tenant_id"],
-                    nt.tenant_settings.c.version == body.expected_version,
-                )
-                .values(
-                    collaboration_enabled=body.enabled,
-                    version=body.expected_version + 1,
-                )
-            )
-            if result.rowcount != 1:
-                raise PlatformError(
-                    409, "version_conflict", "组织配置已变化，请刷新后重试。"
-                )
-            audit(connection, user, "agent.collaboration_settings", user["tenant_id"])
-        return {
-            "enabled": body.enabled,
-            "version": body.expected_version + 1,
-            "platform_enabled": settings.collaboration_enabled,
-            "features": collaboration_features(),
-        }
-
-    @app.post(
-        "/api/v1/remote-agent-credentials",
-        response_model=r.RemoteCredentialResponse,
-        status_code=201,
-    )
-    def remote_credential_create(body: RemoteCredentialCreate, user=Depends(admin)):
-        return RemoteRegistry(platform).create_credential(user, body)
-
-    @app.get("/api/v1/remote-agent-credentials", response_model=r.RemoteCredentialList)
-    def remote_credential_list(
-        cursor: str | None = Query(default=None, max_length=64),
-        limit: int = Query(default=50, ge=1, le=100),
-        user=Depends(admin),
-    ):
-        return RemoteRegistry(platform).list(
-            user, cursor=cursor, limit=limit, credentials=True
-        )
-
-    @app.patch(
-        "/api/v1/remote-agent-credentials/{credential_id}",
-        response_model=r.RemoteAvailabilityResponse,
-    )
-    def remote_credential_change(
-        credential_id: str, body: RemoteAvailabilityChange, user=Depends(admin)
-    ):
-        return RemoteRegistry(platform).set_credential(
-            user, credential_id, body.enabled
-        )
-
-    @app.post(
-        "/api/v1/remote-agents",
-        response_model=r.RemoteRegistrationResponse,
-        status_code=201,
-    )
-    def remote_register(body: RemoteRegistrationCreate, user=Depends(admin)):
-        return RemoteRegistry(platform).register(user, body)
-
-    @app.get("/api/v1/remote-agents", response_model=r.RemoteRegistrationList)
-    def remote_list(
-        cursor: str | None = Query(default=None, max_length=64),
-        limit: int = Query(default=50, ge=1, le=100),
-        user=Depends(admin),
-    ):
-        return RemoteRegistry(platform).list(user, cursor=cursor, limit=limit)
-
-    @app.get(
-        "/api/v1/remote-agents/{registration_id}",
-        response_model=r.RemoteRegistrationResponse,
-    )
-    def remote_get(registration_id: str, user=Depends(admin)):
-        return RemoteRegistry(platform).get(user, registration_id)
-
-    @app.patch(
-        "/api/v1/remote-agents/{registration_id}/availability",
-        response_model=r.RemoteRegistrationResponse,
-    )
-    def remote_availability(
-        registration_id: str, body: RemoteAvailabilityChange, user=Depends(admin)
-    ):
-        return RemoteRegistry(platform).set_enabled(user, registration_id, body.enabled)
-
-    @app.post(
-        "/api/v1/remote-agents/{registration_id}/probe",
-        response_model=r.RemoteProbeResponse,
-        status_code=202,
-    )
-    def remote_probe(registration_id: str, user=Depends(admin)):
-        return RemoteRegistry(platform).request_probe(user, registration_id)
-
-    @app.get("/api/v1/agents/discovery", response_model=r.DiscoveryResponse)
-    def discover_agents(
-        capability: str | None = Query(default=None, max_length=64),
-        task_type: str | None = Query(default=None, max_length=64),
-        output_digest: str | None = Query(default=None, pattern=r"^[0-9a-f]{64}$"),
-        limit: int = Query(default=50, ge=1, le=100),
-        cursor: str | None = Query(default=None, max_length=64),
-        user=Depends(auth),
-    ):
-        from agent_platform.modules.agent_registry.service import AgentRegistry
-
-        return AgentRegistry(platform).discover(
-            user,
-            capability=capability,
-            task_type=task_type,
-            output_digest=output_digest,
-            limit=limit,
-            cursor=cursor,
-        )
-
     @app.patch("/api/v1/agents/{agent_id}/availability")
     def agent_availability(
         agent_id: str, body: s.AgentAvailability, user=Depends(admin)
     ):
-        from agent_platform.modules.agent_registry.service import AgentRegistry
-
-        return AgentRegistry(platform).set_availability(user, agent_id, body.available)
+        return platform.set_agent_availability(user, agent_id, body.available)
 
     @app.get("/api/v1/agents/execution-options")
     def agent_execution_options(user=Depends(auth)):
@@ -726,12 +594,6 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
             "default_context_window": settings.default_context_window,
         }
 
-    @app.post("/api/v1/agents/templates/analysis-team")
-    def install_analysis_team(user=Depends(admin)):
-        from agent_platform.modules.collaboration.templates import install
-
-        return install(platform, user)
-
     @app.post("/api/v1/agents", status_code=201)
     def create_agent(body: s.AgentCreate, user=Depends(admin)):
         values = body.model_dump()
@@ -743,12 +605,6 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
     def patch_agent(agent_id: str, body: s.AgentPatch, user=Depends(admin)):
         # Explicit null clears the model preference; omitted fields keep the draft.
         values = body.model_dump(exclude_none=True)
-        if "collaboration_spec" in body.model_fields_set:
-            values["collaboration_spec"] = (
-                body.collaboration_spec.model_dump()
-                if body.collaboration_spec
-                else None
-            )
         if "model_id" in body.model_fields_set:
             values["model_id"] = body.model_id
         if "execution_policy" in body.model_fields_set:
@@ -856,22 +712,6 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
     )
     def cancel(run_id: str, user=Depends(auth)):
         return platform.cancel_run(user, run_id)
-
-    @app.get(
-        "/api/v1/runs/{run_id}/collaboration", response_model=r.CollaborationDetail
-    )
-    def collaboration_detail(run_id: str, user=Depends(auth)):
-        from agent_platform.modules.collaboration.queries import detail
-
-        return detail(platform, user, run_id)
-
-    @app.get(
-        "/api/v1/runs/{run_id}/tasks/{task_id}", response_model=r.CollaborationDetail
-    )
-    def collaboration_task(run_id: str, task_id: str, user=Depends(auth)):
-        from agent_platform.modules.collaboration.queries import detail
-
-        return detail(platform, user, run_id, task_id)
 
     @app.get("/api/v1/runs/{run_id}/events")
     async def events(
@@ -1315,13 +1155,21 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
 
     register_support(app, platform, principal, auth)
 
+    from agent_platform.apps.api.model_api import register as register_model_api
+
+    register_model_api(app, platform, auth, LeasedStreamingResponse)
+
     @app.get("/api/v2/me", response_model=r.AuthResponse)
     def me_v2(request: Request, _user=Depends(principal)):
         return platform.authenticate(request.cookies.get(COOKIE))
 
+    from agent_platform.apps.api.documentation import register as register_documentation
+
+    register_documentation(app)
+
     @app.get("/{path:path}", include_in_schema=False)
     def web(path: str):
-        if path.startswith("api/"):
+        if path.startswith(("api/", "v1/")):
             raise PlatformError(404, "not_found", "接口不存在。")
         directory = settings.web_directory.resolve()
         requested = (directory / path).resolve()
@@ -1332,7 +1180,7 @@ def create_app(settings: Settings | None = None, *, gateway=None) -> FastAPI:
         return JSONResponse(
             {
                 "message": "请先构建 agent_platform/apps/web，或运行前端开发服务器。",
-                "api_docs": "/docs",
+                "api_docs": "/api/docs",
             }
         )
 

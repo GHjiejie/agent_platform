@@ -118,17 +118,12 @@ class APIIntegrationTest(unittest.TestCase):
 
         agents = self.request("GET", "/agents").json()["items"]
         self.assertEqual(len(agents), len(BUILTIN_AGENTS))
-        self.assertEqual(
-            {a["builtin_key"] for a in agents}, {"normal", "generative_ui"}
-        )
+        self.assertEqual({a["builtin_key"] for a in agents}, {"normal"})
         self.assertTrue(
             all(a["model_id"] is None and a["published_version"] == 1 for a in agents)
         )
         self.assertTrue(all(a["starter_prompts"] for a in agents))
-        ui = next(a for a in agents if a["builtin_key"] == "generative_ui")
-        self.assertEqual(ui["tools"], ["generate_sandboxed_ui"])
-        self.assertEqual(ui["max_tokens"], self.settings.default_output_tokens)
-        self.assertTrue(all(not a["tools"] for a in agents if a != ui))
+        self.assertTrue(all(not agent["tools"] for agent in agents))
         first = agents[0]
         self.request(
             "PATCH", f"/agents/{first['id']}", json={"system_prompt": "Edited draft"}
@@ -190,26 +185,10 @@ class APIIntegrationTest(unittest.TestCase):
                     select(t.messages).where(t.messages.c.session_id == session["id"])
                 ).mappings()
             )
-        # Updating a catalog must never change an in-flight conversation's agent.
-        with self.assertRaises(PlatformError) as error:
-            self.platform._bootstrap_builtin_agents()
-        self.assertEqual(error.exception.code, "agent_retirement_busy")
-        with self.db.read() as conn:
-            self.assertIsNone(
-                conn.scalar(
-                    select(t.agents.c.builtin_key).where(t.agents.c.id == normal["id"])
-                )
-            )
-        with self.db.transaction(f"tenant:{self.tenant}") as conn:
-            conn.execute(
-                update(t.runs)
-                .where(t.runs.c.id == run_id)
-                .values(status="succeeded", finished_at=now())
-            )
         self.platform._bootstrap_builtin_agents()
         self.platform._bootstrap_builtin_agents()
         after = self.request("GET", "/agents").json()["items"]
-        self.assertEqual({a["builtin_key"] for a in after}, {"normal", "generative_ui"})
+        self.assertEqual({a["builtin_key"] for a in after}, {"normal"})
         adopted = next(a for a in after if a["builtin_key"] == "normal")
         self.assertEqual(adopted["id"], normal["id"])
         self.assertEqual(adopted["system_prompt"], "Keep my normal draft")
@@ -1462,62 +1441,6 @@ class APIIntegrationTest(unittest.TestCase):
         self.assertEqual(len(financial), 1)
         self.assertEqual(financial[0]["actor_email"], self.admin["user"]["email"])
         self.assertIn("Receipt TEST-42", financial[0]["details"])
-
-    def test_manual_remote_fee_confirmation_uses_amount_and_platform_finance_authority(
-        self,
-    ):
-        from agent_platform.modules.costs import CostService
-
-        CostService(self.db, authorize=lambda conn: None).configure_budget(
-            "platform",
-            "platform",
-            "1",
-            self.fixture.owner["id"],
-        )
-        billing = self.platform.billing
-        billing.credit(
-            self.tenant,
-            self.fixture.owner["id"],
-            "1",
-            "Remote fixture credit",
-            "fixed-credit",
-        )
-        billing.reserve_fixed(
-            self.tenant,
-            self.fixture.owner["id"],
-            "remote-version",
-            "remote-run",
-            "remote-fee",
-            quote_id="quote-1",
-            max_charge="0.2",
-        )
-        billing.unresolved(self.tenant, "remote-fee", "remote reply unavailable")
-        body = {
-            "action": "confirm",
-            "reason": "verified remote invoice",
-            "fixed_amount": "0.12",
-        }
-        denied = self.request(
-            "POST",
-            "/billing/reservations/remote-fee/resolve",
-            auth=self.login(self.create_user()["email"]),
-            key="fixed-confirm",
-            json=body,
-        )
-        self.assertEqual(denied.status_code, 403, denied.text)
-        for _ in range(2):
-            response = self.request(
-                "POST",
-                "/billing/reservations/remote-fee/resolve",
-                key="fixed-confirm",
-                json=body,
-            )
-            self.assertEqual(response.status_code, 200, response.text)
-            self.assertEqual(response.json()["charge_kind"], "fixed")
-            self.assertEqual(Decimal(response.json()["cost"]), Decimal("0.12"))
-        wallet = self.request("GET", "/billing/wallet").json()
-        self.assertEqual(Decimal(wallet["balance"]), Decimal("0.88"))
-        self.assertEqual(Decimal(wallet["reserved"]), 0)
 
     def test_manual_confirmation_updates_wallet_usage_and_audit_once(self):
         call_id = self.seed_unresolved_call()

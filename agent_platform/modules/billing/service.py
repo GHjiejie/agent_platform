@@ -572,8 +572,6 @@ class BillingService:
         *,
         deployment_id: str | None = None,
         require_cost_policy: bool = False,
-        _fixed_amount: Any = None,
-        _quote_id: str | None = None,
     ) -> dict:
         input_tokens = _tokens(input_tokens, "input_tokens")
         max_output_tokens = _tokens(max_output_tokens, "max_output_tokens")
@@ -587,21 +585,7 @@ class BillingService:
                 "invalid_reservation",
                 "All model call ownership identifiers are required",
             )
-        fixed = _fixed_amount is not None
-        amount = (
-            _money(_fixed_amount)
-            if fixed
-            else _cost(input_tokens, max_output_tokens, input_price, output_price)
-        )
-        if fixed and (
-            not _quote_id
-            or len(_quote_id) > 64
-            or deployment_id is not None
-            or any((input_tokens, max_output_tokens, input_price, output_price))
-        ):
-            raise PlatformError(
-                422, "invalid_fixed_charge", "固定报价不能包含模型用量或部署。"
-            )
+        amount = _cost(input_tokens, max_output_tokens, input_price, output_price)
         if amount > MAX_MONEY:
             raise PlatformError(
                 422, "invalid_amount", "Reservation maximum amount exceeded"
@@ -619,10 +603,6 @@ class BillingService:
                 require_cost_policy,
             ]
         )
-        if fixed:
-            fingerprint = _fingerprint(
-                [fingerprint, "fixed", _quote_id, format(amount.normalize(), "f")]
-            )
         admitted_scopes = None
         try:
             with self.db.transaction(f"tenant:{tenant_id}") as conn:
@@ -740,8 +720,8 @@ class BillingService:
                     "run_id": run_id,
                     "call_id": call_id,
                     "fingerprint": fingerprint,
-                    "charge_kind": "fixed" if fixed else "tokens",
-                    "quote_id": _quote_id if fixed else None,
+                    "charge_kind": "tokens",
+                    "quote_id": None,
                     "amount": amount,
                     "input_price": input_price,
                     "output_price": output_price,
@@ -762,18 +742,15 @@ class BillingService:
                     "updated_at": now,
                 }
                 conn.execute(reservations_table.insert().values(**values))
-                if fixed:
-                    cost_service.reserve_fixed(conn, tenant_id, call_id, amount)
-                else:
-                    cost_service.reserve(
-                        conn,
-                        tenant_id,
-                        call_id,
-                        deployment_id,
-                        input_tokens,
-                        max_output_tokens,
-                        required=require_cost_policy,
-                    )
+                cost_service.reserve(
+                    conn,
+                    tenant_id,
+                    call_id,
+                    deployment_id,
+                    input_tokens,
+                    max_output_tokens,
+                    required=require_cost_policy,
+                )
                 conn.execute(
                     wallets.update()
                     .where(wallets.c.tenant_id == tenant_id)
@@ -786,43 +763,6 @@ class BillingService:
                     tenant_id, call_id, admitted_scopes, 0, rollback=True
                 )
             raise
-
-    def reserve_fixed(
-        self,
-        tenant_id,
-        user_id,
-        registration_id,
-        run_id,
-        call_id,
-        *,
-        quote_id,
-        max_charge,
-    ):
-        """Reserve a published remote quote without manufacturing token usage.
-
-        registration_id is the billing subject in the legacy model_id column;
-        charge_kind distinguishes it from a model. A platform cost budget is
-        mandatory for these external payments, including zero-price quotes.
-        """
-        from pydantic import TypeAdapter
-
-        from agent_platform.modules.agent_registry.contracts import Identifier
-
-        TypeAdapter(Identifier).validate_python(quote_id)
-        return self.reserve(
-            tenant_id,
-            user_id,
-            registration_id,
-            run_id,
-            call_id,
-            0,
-            0,
-            "0",
-            "0",
-            require_cost_policy=True,
-            _fixed_amount=max_charge,
-            _quote_id=quote_id,
-        )
 
     @staticmethod
     def _get_reservation(conn, tenant_id, call_id):
@@ -1089,90 +1029,6 @@ class BillingService:
         self._finish_rate(row, input_tokens + output_tokens)
         return _serialize(row)
 
-    def settle_fixed(self, tenant_id: str, call_id: str, fee: dict) -> dict:
-        """Apply immutable final remote fee evidence, independently of output.
-
-        A wrong request/quote or an excessive amount is preserved as conflict
-        evidence and retains the financial hold. It never becomes a token charge.
-        """
-        from agent_platform.modules.costs import CostService
-        from agent_platform.modules.metering import record_receipt
-        from agent_platform.modules.remote_agents.contracts import RemoteFee
-
-        fee = RemoteFee.model_validate(fee)
-        amount = _money(fee.amount)
-        evidence = {
-            "source": "remote_agent",
-            "source_event_id": fee.receipt_id,
-            "fee": fee.model_dump(mode="json"),
-        }
-        with self.db.transaction(f"tenant:{tenant_id}") as conn:
-            self._authorize(conn)
-            previous = self._get_reservation(conn, tenant_id, call_id)
-            if previous["charge_kind"] != "fixed":
-                raise PlatformError(
-                    409, "charge_kind_mismatch", "模型用量不能按远程报价结算。"
-                )
-            conflict = (
-                fee.request_id != call_id
-                or fee.quote_id != previous["quote_id"]
-                or amount > previous["amount"]
-                or previous["status"] in {"released", "written_off"}
-                or (
-                    previous["status"] == "settled"
-                    and amount != previous["actual_cost"]
-                )
-            )
-            _, receipt_conflict = record_receipt(
-                conn,
-                tenant_id,
-                call_id,
-                0,
-                0,
-                amount,
-                evidence,
-                conflict=conflict,
-            )
-            conflict = conflict or receipt_conflict
-            costs = CostService(self.db)
-            if conflict:
-                row = previous
-                if row["status"] == "reserved":
-                    changes = {
-                        "status": "unresolved",
-                        "updated_at": _now(),
-                        "reason": "Remote fee evidence conflicts with the reserved quote",
-                    }
-                    conn.execute(
-                        reservations_table.update()
-                        .where(reservations_table.c.id == row["id"])
-                        .values(**changes)
-                    )
-                    row.update(changes)
-                    costs.finalize(conn, tenant_id, call_id, action="unresolved")
-            else:
-                row = self._settle_locked(
-                    conn,
-                    tenant_id,
-                    call_id,
-                    0,
-                    0,
-                    amount,
-                    _json(evidence),
-                    fixed_cost=amount,
-                )
-                costs.finalize(
-                    conn, tenant_id, call_id, action="settle", provider_cost=amount
-                )
-        self._finish_rate(row, 0)
-        if conflict:
-            raise PlatformError(
-                409,
-                "settlement_conflict",
-                "费用证据已保存，报价差异需核实；未重复收费。",
-            )
-        return _serialize(row)
-
     def _settle_locked(
         self,
         conn: Connection,
@@ -1278,7 +1134,7 @@ class BillingService:
             kind="charge",
             amount=-charged,
             balance=balance,
-            description=f"{'Remote' if fixed_cost is not None else 'Model'} call {call_id}",
+            description=f"{'Fixed' if fixed_cost is not None else 'Model'} call {call_id}",
             call_id=call_id,
             fingerprint=_fingerprint(
                 [call_id, "fixed", format(fixed_cost.normalize(), "f")]

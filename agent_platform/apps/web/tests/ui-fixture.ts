@@ -85,16 +85,13 @@ export async function fixture(page: Page, options: { failRun?: boolean; holdRun?
       writes.push({ path, body: body ?? {}, key: request.headers()["idempotency-key"] });
     }
     if (resource === "/agents" && method === "POST") return json({ ...request.postDataJSON(), id: "created-agent" }, 201);
-    if (resource === "/agents") return json({ items: options.empty ? [] : options.reducedAgents ? [
-      { ...agents[0], name: "可视化界面助手", builtin_key: "generative_ui", tools: ["generate_sandboxed_ui"] },
-      { ...agents[1], id: "normal", name: "normal", builtin_key: "normal" },
-    ] : agents });
+    if (resource === "/agents") return json({ items: options.empty ? [] : options.reducedAgents ? [{ ...agents[0], id: "normal", name: "normal", builtin_key: "normal", category: "通用对话", description: "通用聊天助手，直接回答问题并协助处理文字内容。" }] : agents });
     if (resource === "/agents/execution-options") return json({ timeout_seconds: 300, max_cost: "1", max_steps: 50, max_output_tokens: 2000000, default_output_tokens: 131072, default_context_window: 1048576 });
     if (resource === "/token-defaults") return json({ output_tokens: 131072, context_window: 1048576 });
     if (resource === "/models") return json({ items: options.empty ? [] : models });
     if (resource === "/sessions" && method === "POST") { newSession.title = String(request.postDataJSON().title); newSession.agent_id = String(request.postDataJSON().agent_id); return json(newSession, 201); }
     if (resource === "/sessions") return json({ items: options.empty ? [] : [session, ...(hasRun ? [newSession] : [])] });
-    if (resource === "/sessions/history") return json({ ...session, messages, runs: [] });
+    if (resource === "/sessions/history") return json({ ...session, ...(options.reducedAgents ? { agent_id: "normal" } : {}), messages, runs: [] });
     if (resource === "/sessions/new-session") {
       if (options.delayFinalSnapshot && runStatus === "succeeded") await gate;
       return json({ ...newSession, messages: newMessages, runs: hasRun ? [run()] : [] });

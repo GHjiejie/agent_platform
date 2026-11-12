@@ -6,7 +6,7 @@ export default defineConfig(({ mode }) => ({
   server: {
     port: 5173,
     proxy: {
-      "/api": {
+      "^/(api|v1)/": {
         target:
           loadEnv(mode, ".", "PLATFORM_").PLATFORM_API_PROXY ||
           "http://127.0.0.1:8000",

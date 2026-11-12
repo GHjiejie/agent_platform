@@ -32,7 +32,6 @@ X-CSRF-Token: <当前登录会话的 CSRF token>
 
 最后一条消息必须是非空用户文本，长度最多 32000 字符；消息 ID 非空、请求内不重复、最多 128 字符。可只传最新用户消息，也可携带已有用户/助手/工具消息。旧消息仅视为浏览器缓存，模型使用服务端持久化历史，首个 `MESSAGES_SNAPSHOT` 会替换客户端缓存。客户端不能通过历史消息覆盖已发布的系统提示。
 
-`forwardedProps.modelId` 可省略或为 null，沿用已发布 Agent 与组织模型选择策略。非空的客户端 tools、context、state、parentRunId、resume，以及自定义供应商地址、密钥或系统/开发者/推理消息不在此 profile 的支持范围，会明确拒绝。工具由服务端已发布 Agent 的白名单决定。目前支持文本、calculator、current_time 和 generate_sandboxed_ui；工具参数在模型完成参数生成后作为一个 `TOOL_CALL_ARGS.delta` JSON 字符串输出。可视化工具校验成功后另发 `ACTIVITY_SNAPSHOT`（`activityType=GENERATIVE_UI`），完整代码通过隔离 iframe 显示，Activity 随结束和恢复快照保留，详见[可视化界面助手](generative-ui-agent.md)。
 
 成功为 `200 text/event-stream`，响应头 `X-Run-ID` 为平台内部运行 ID，`X-AG-UI-Protocol-Version: 1.0`。AG-UI 事件中的 runId 保留客户端 runId，REST 运行详情和取消使用 X-Run-ID。两种 ID 在服务端冻结的关联数据中对应。鉴权、CSRF、会话归属、组织状态、发布版本、模型授权、会话串行、队列及 SSE 名额在服务端检查；新运行与 SSE 名额在同一事务中确认，连接限额拒绝不会遗留已入队的新运行。
 

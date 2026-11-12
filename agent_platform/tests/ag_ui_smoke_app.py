@@ -11,11 +11,11 @@ from pathlib import Path
 from cryptography.fernet import Fernet
 
 from agent_platform.apps.api.main import create_app
+from agent_platform.infrastructure import tables as t
 from agent_platform.infrastructure.config import Settings
 from agent_platform.modules.gateway_control import GatewayService
 from agent_platform.modules.runtime.gateway import GatewayEvent, ModelReply
 from agent_platform.tests.fixtures import PASSWORD, MultiTenantFixture, migrate
-from agent_platform.tests.generative_ui_fixture import COUNTER_UI
 from agent_platform.tests.test_execution_lifecycle import OfflineControl
 
 
@@ -33,32 +33,6 @@ class SmokeGateway:
             yield GatewayEvent("text", {"text": "验证完成，结果为 300。"})
             yield GatewayEvent(
                 "result", ModelReply("验证完成，结果为 300。", [], 20, 25, {})
-            )
-            return
-        if last["role"] == "user" and any(
-            word in last["content"] for word in ("界面", "计数器")
-        ):
-            yield GatewayEvent(
-                "result",
-                ModelReply(
-                    "",
-                    [
-                        {
-                            "id": "smoke-ui",
-                            "name": "generate_sandboxed_ui",
-                            "args": COUNTER_UI,
-                        }
-                    ],
-                    20,
-                    10,
-                    {},
-                ),
-            )
-            return
-        if last["role"] == "tool" and "界面代码已传输" in last["content"]:
-            yield GatewayEvent("text", {"text": "计数器界面已生成。"})
-            yield GatewayEvent(
-                "result", ModelReply("计数器界面已生成。", [], 20, 5, {})
             )
             return
         if last["role"] == "user" and "计算" in last["content"]:
@@ -89,7 +63,7 @@ class SmokeGateway:
         yield GatewayEvent("result", ModelReply(text, [], 20, 5, {}))
 
 
-def create_smoke_app(gateway=None, *, collaboration=False):
+def create_smoke_app(gateway=None):
     directory = tempfile.TemporaryDirectory(prefix="ag-ui-browser-")
     settings = Settings(
         database_url=f"sqlite:///{Path(directory.name) / 'platform.db'}",
@@ -98,7 +72,6 @@ def create_smoke_app(gateway=None, *, collaboration=False):
         secret_encryption_key=Fernet.generate_key().decode(),
         litellm_url="http://127.0.0.1:1",
         embedded_worker=True,
-        collaboration_enabled=collaboration,
         worker_poll_seconds=0.05,
         run_timeout=0,
         export_directory=Path(directory.name) / "exports",
@@ -117,10 +90,15 @@ def create_smoke_app(gateway=None, *, collaboration=False):
     platform.gateway.enroll(fixture.tenant_id, actor_id=fixture.owner["id"])
     while platform.gateway.process_one():
         pass
+    normal = next(
+        agent
+        for agent in platform.list_resources(t.agents, fixture.owner)
+        if agent["builtin_key"] == "normal"
+    )
     agent = platform.save_agent(
         fixture.owner,
         {
-            "name": "AG-UI 联调助手",
+            "name": "normal",
             "description": "免费的本地协议验证模型",
             "system_prompt": "Use the calculator when asked to calculate.",
             "model_id": model["id"],
@@ -129,6 +107,7 @@ def create_smoke_app(gateway=None, *, collaboration=False):
             "max_tokens": 64,
             "tools": ["calculator"],
         },
+        normal["id"],
     )
     platform.publish(fixture.owner, agent["id"])
     platform.billing.credit(
@@ -138,17 +117,4 @@ def create_smoke_app(gateway=None, *, collaboration=False):
         "Disposable test balance",
         "smoke-credit",
     )
-    if collaboration:
-        from sqlalchemy import update
-
-        from agent_platform.infrastructure import tenancy_tables as nt
-        from agent_platform.modules.collaboration.templates import install
-
-        install(platform, fixture.owner)
-        with platform.db.transaction(f"tenant:{fixture.tenant_id}") as connection:
-            connection.execute(
-                update(nt.tenant_settings)
-                .where(nt.tenant_settings.c.tenant_id == fixture.tenant_id)
-                .values(collaboration_enabled=True)
-            )
     return app

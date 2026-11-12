@@ -653,8 +653,8 @@ class ExecutionDeadlineMigrationTests(unittest.TestCase):
                         self.assertEqual(upgraded["deadline"], deadline)
                         self.assertEqual(upgraded["message"], "Keep input")
                         agent = connection.execute(select(t.agents)).mappings().one()
-                        self.assertEqual(agent["execution_mode"], "single")
+                        self.assertNotIn("execution_mode", agent)
                         self.assertTrue(agent["available"])
-                        self.assertEqual(agent["system_prompt"], "Keep prompt")
+                        self.assertEqual(agent["builtin_key"], "normal")
                 finally:
                     db.close()

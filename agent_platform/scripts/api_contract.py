@@ -6,6 +6,7 @@ settings, runs lifespan/migrations or connects to an upstream provider.
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from agent_platform.apps.api.main import create_app
@@ -14,9 +15,15 @@ from agent_platform.infrastructure.config import Settings
 OUTPUT = Path(__file__).resolve().parents[1] / "apps/web/src/api-contract.generated.ts"
 
 
+def type_name(name):
+    """OpenAPI component names can contain '-' but TS identifiers cannot."""
+    identifier = re.sub(r"[^A-Za-z0-9_$]", "_", name)
+    return identifier if re.match(r"^[A-Za-z_$]", identifier) else "_" + identifier
+
+
 def typescript(schema):
     if "$ref" in schema:
-        return schema["$ref"].rsplit("/", 1)[-1]
+        return type_name(schema["$ref"].rsplit("/", 1)[-1])
     for union in ("anyOf", "oneOf"):
         if union in schema:
             return " | ".join(typescript(item) for item in schema[union])
@@ -65,7 +72,21 @@ def generate():
         "",
     ]
     for name, schema in sorted(document["components"]["schemas"].items()):
-        lines.append(f"export type {name} = {typescript(schema)};")
+        lines.append(f"export type {type_name(name)} = {typescript(schema)};")
+    lines += ["", "export type ApiRequestByOperation = {"]
+    for path, methods in sorted(document["paths"].items()):
+        for method, operation in sorted(methods.items()):
+            schema = (
+                operation.get("requestBody", {})
+                .get("content", {})
+                .get("application/json", {})
+                .get("schema")
+            )
+            if schema:
+                lines.append(
+                    f"  {json.dumps(method.upper() + ' ' + path)}: {typescript(schema)};"
+                )
+    lines += ["};"]
     lines += ["", "export type ApiResponseByOperation = {"]
     for path, methods in sorted(document["paths"].items()):
         for method, operation in sorted(methods.items()):
